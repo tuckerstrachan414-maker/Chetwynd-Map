@@ -5,7 +5,7 @@ import type { FrameProfiler } from './FrameProfiler';
 import { worldLightUniforms } from './WorldLight';
 import { aoBlurFrag, aoFrag } from './aoGlsl';
 import { dofFrag } from './dofGlsl';
-import { adaptFrag, compositeFrag, downFrag, finalFrag, fxaaFrag, lumFrag, quadVert, upFrag } from './postGlsl';
+import { adaptFrag, compositeFrag, downFrag, finalFrag, fxaaFrag, lumFrag, quadVert, skyFrag, skyVert, upFrag } from './postGlsl';
 
 export interface PostSettings {
   msaa: number;
@@ -58,6 +58,11 @@ export class Post {
   private readonly bloomUp: THREE.WebGLRenderTarget[] = [];
   private readonly quad = new FullScreenQuad();
   readonly composite: THREE.ShaderMaterial;
+  /**
+   * The sky, drawn inside the scene render right after the opaque objects, only where none of them
+   * is: thin and transparent things (leaf edges, wires, rain) then blend with the real sky.
+   */
+  readonly skyMesh: THREE.Mesh;
   private readonly mLum: THREE.ShaderMaterial;
   private readonly mAdapt: THREE.ShaderMaterial;
   private readonly mDown: THREE.ShaderMaterial;
@@ -136,6 +141,16 @@ export class Post {
       uUnderSigma: { value: new THREE.Vector3(0.62, 0.3, 0.38) },
       uUnderDeep: { value: new THREE.Vector3() },
     });
+    const skyMat = new THREE.ShaderMaterial({
+      vertexShader: skyVert,
+      fragmentShader: skyFrag,
+      uniforms: this.composite.uniforms,
+      depthWrite: false,
+    });
+    this.skyMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), skyMat);
+    this.skyMesh.name = 'sky';
+    this.skyMesh.frustumCulled = false;
+    this.skyMesh.renderOrder = 1e9; // last of the opaque objects
     this.mDof = mk(dofFrag, {
       tColor: { value: this.compRT.texture },
       tDepth: { value: depthTexture },
@@ -260,6 +275,12 @@ export class Post {
   render(scene: THREE.Scene, camera: THREE.PerspectiveCamera, dt: number, time: number): void {
     const r = this.renderer;
     const pr = this.prof;
+    const cu = this.composite.uniforms;
+    // Camera uniforms first: the sky pass draws inside the scene render with them.
+    (cu.uInvProj.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
+    (cu.uCamWorld.value as THREE.Matrix4).copy(camera.matrixWorld);
+    cu.uViewAltKm.value = Math.max(camera.position.y / 1000, 0.01);
+    cu.uTime.value = time;
     pr?.begin('render');
     pr?.gpu('opaque');
     r.setRenderTarget(this.sceneRT);
@@ -290,7 +311,6 @@ export class Post {
     }
     pr?.begin('post');
     if (pr) pr.pass = 'post';
-    const cu = this.composite.uniforms;
     // Ambient occlusion at half resolution, blurred along x then y (depth-aware).
     cu.uAOK.value = this.settings.ao ? 0.75 : 0;
     if (this.settings.ao) {
@@ -309,10 +329,6 @@ export class Post {
       (b.uDir.value as THREE.Vector2).set(0, 1 / this.aoRT.height);
       this.pass(this.mAOBlur, this.aoRT);
     }
-    (cu.uInvProj.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
-    (cu.uCamWorld.value as THREE.Matrix4).copy(camera.matrixWorld);
-    cu.uViewAltKm.value = Math.max(camera.position.y / 1000, 0.01);
-    cu.uTime.value = time;
     pr?.gpu('composite');
     this.pass(this.composite, this.compRT);
     let comp = this.compRT;

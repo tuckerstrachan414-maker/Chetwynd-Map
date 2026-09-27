@@ -322,6 +322,7 @@ export class World {
     pr?.end('props');
     propUniforms.uNight.value = this.sky.night;
     propUniforms.uTime.value = time;
+    propUniforms.uPxAngle.value = (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / Math.max(post.pixelHeight, 1);
     // Photocells switch the street lights on at dusk, together with the lens glow.
     pr?.begin('lights');
     pr?.gpu('lights');

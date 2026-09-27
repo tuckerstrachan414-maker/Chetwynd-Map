@@ -156,6 +156,7 @@ export class App {
     this.post = new Post(this.renderer, this.world.atmosphere, { msaa: p.headless ? 0 : qs.msaa, fxaa: p.headless || qs.fxaa, ao: qs.ao });
     this.world.prof = this.prof;
     this.post.prof = this.prof;
+    this.scene.add(this.post.skyMesh);
     this.physics = new Physics();
     await this.physics.init();
     this.player = new Player(this.physics);

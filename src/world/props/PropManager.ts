@@ -30,6 +30,8 @@ export const propUniforms = {
   uNight: { value: 0 },
   uTime: { value: 0 },
   uSnow: { value: 0 },
+  /** View angle of one screen pixel (radians), for the wires' minimum width. */
+  uPxAngle: { value: 0.0015 },
 };
 
 interface Kind {
@@ -173,7 +175,8 @@ export class PropManager {
               // Signal cycle: green 20 s, amber 4 s, red 24 s.
               float cyc = mod(uTime, 48.0);
               float on = ${phase === 0 ? 'step(24.0, cyc)' : phase === 1 ? '1.0 - step(20.0, cyc)' : 'step(20.0, cyc) * (1.0 - step(24.0, cyc))'};
-              totalEmissiveRadiance *= on * 40.0;
+              // LED signals dim after dark (else the adapted night exposure floods the sky with glare).
+              totalEmissiveRadiance *= on * 40.0 * mix(1.0, 0.22, uNight);
             ` : `
               // Street lights come on at dusk (photocells) and glow warm high-pressure sodium / LED.
               totalEmissiveRadiance *= smoothstep(0.25, 0.6, uNight) * 60.0;
@@ -371,6 +374,7 @@ export class PropManager {
   /** Conductors hang in catenaries between consecutive poles/towers of each mapped or inferred line. */
   private buildWires(): void {
     const pos: number[] = [];
+    const ctr: number[] = [];
     const idx: number[] = [];
     const tmp = new THREE.Vector3();
     const addSpan = (a: THREE.Vector3, b: THREE.Vector3, sag: number, r: number) => {
@@ -388,6 +392,7 @@ export class PropManager {
           tmp.copy(side).multiplyScalar(Math.cos(ang) * r);
           tmp.y += Math.sin(ang) * r;
           pos.push(p.x + tmp.x, p.y + tmp.y, p.z + tmp.z);
+          ctr.push(p.x, p.y, p.z);
         }
       }
       for (let s = 0; s < segs; s++) {
@@ -424,10 +429,31 @@ export class PropManager {
     lines(this.data.hv ?? [], this.data.tower ?? [], TOWER_ATTACH, 0.02, 0.02);
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('aCenter', new THREE.Float32BufferAttribute(ctr, 3));
     g.setIndex(idx);
     g.computeVertexNormals();
     g.computeBoundingSphere();
-    const mat = worldLit(new THREE.MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.5, metalness: 0.6 }));
+    // A wire thinner than a pixel is drawn a pixel wide and correspondingly faint (its coverage), so
+    // distant lines fade out smoothly instead of breaking into dashes.
+    const wm = new THREE.MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.5, metalness: 0.6, transparent: true });
+    wm.onBeforeCompile = (shader) => {
+      shader.uniforms.uPxAngle = propUniforms.uPxAngle;
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nattribute vec3 aCenter;\nuniform float uPxAngle;\nvarying float vWireA;')
+        .replace('#include <begin_vertex>', `
+          vec3 wOff = position - aCenter;
+          float wR = max(length(wOff), 1e-5);
+          float wDist = length((modelMatrix * vec4(aCenter, 1.0)).xyz - cameraPosition);
+          float wK = max(1.0, 0.7 * wDist * uPxAngle / wR);
+          vWireA = 1.0 / wK;
+          vec3 transformed = aCenter + wOff * wK;
+        `);
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying float vWireA;')
+        .replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.a *= vWireA;');
+    };
+    wm.customProgramCacheKey = () => 'cw-wire';
+    const mat = worldLit(wm);
     this.wires = new THREE.Mesh(g, mat);
     this.wires.castShadow = false;
     this.wires.receiveShadow = false;

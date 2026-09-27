@@ -79,7 +79,7 @@ Edits apply live and persist in your browser. **Export** downloads `overrides.js
 `?at=x,z&yaw=deg&pitch=deg` start position (engine metres from the town centre; yaw 0 = north) ·
 `t=14.5` hour · `date=2025-7-15` date for the sun and moon · `season=summer|autumn|winter|spring` ·
 `weather=clear|scattered|overcast|rain|snow|fog` · `mode=drive|drone|photo|edit` · `fov=70` ·
-`q=low|medium|high|ultra` graphics quality · `bench` run the benchmark
+`q=low|medium|high|ultra` graphics quality · `bench` run the benchmark · `prof` show where the frame time goes
 
 ## Requirements and performance
 
@@ -95,9 +95,15 @@ Quality is picked from your GPU the first time (change it with **O**):
 | High | GTX 1060, RTX, RX 5000+, Apple M1 | Full resolution, 4× MSAA, 4K shadows, full grass and draw distances |
 | Ultra | RTX 3070 / RX 6800 and up, Apple M-Pro/Max | Up to 2× pixel density, denser grass, longer tree and building distances |
 
-Dynamic resolution lowers the render scale a little when a frame runs long, to hold 60 fps (30 fps
-on Low). To measure your machine, open `?bench`: a 70-second flight that reports average and
-1 % low frame rates and copies them to the clipboard.
+Dynamic resolution lowers the render scale a little when the GPU is what holds a frame back, to hold
+60 fps (30 fps on Low). To measure your machine, open `?bench`: a 70-second flight that reports
+average and 1 % / 0.1 % low frame rates and copies a report to the clipboard. The report also says
+where the time went (CPU and GPU time per part of the frame, draw calls, and the cause of any long
+frame), so pasting it is enough to diagnose a slow machine. `?prof` shows the same breakdown live.
+
+Shaders are compiled while the start screen loads, so nothing stalls the first time it comes into
+view. Trees, street furniture, grass and the terrain are drawn only where the camera (or the sun's
+shadows reaching the view) can see them.
 
 ## Run locally
 

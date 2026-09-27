@@ -6,8 +6,8 @@ varying vec2 vUv;
 void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
 `;
 
-/** Scene + atmosphere composite: aerial perspective on geometry, physical sky elsewhere. */
-export const compositeFrag = /* glsl */ `
+/** Uniforms and helpers shared by the scene composite and the sky pass. */
+const compositeHead = /* glsl */ `
 precision highp float;
 ${atmosphereCommon}
 ${skyViewLookup}
@@ -132,6 +132,11 @@ vec3 cwSkyLut(vec3 dir) {
 }
 ${cloudSkyGlsl}
 
+`;
+
+/** Scene + atmosphere composite: aerial perspective on geometry; sky pixels (drawn by the sky pass) pass through. */
+export const compositeFrag = /* glsl */ `
+${compositeHead}
 void main() {
   float depth = texture2D(tDepth, vUv).r;
   bool isSky = uReversed > 0.5 ? depth <= 0.0 : depth >= 1.0;
@@ -144,10 +149,8 @@ void main() {
   vec3 sunT = transmittanceTo(uSunDir);
   float ovK = cwOvercastK();
   if (isSky) {
-    vec4 cl = cwCloudLayer(camPos, dir, 1e9, sunT);
-    gDiskVis = pow(1.0 - cl.a, 4.0);
-    col = cwSky(dir, skyRadiance(dir), sunT);
-    col = mix(col, cl.rgb, cl.a);
+    // The sky pass already drew the sky (and whatever thin or transparent things lie in front of it).
+    col = texture2D(tColor, vUv).rgb;
   } else {
     vec3 scene = texture2D(tColor, vUv).rgb;
     if (uAOK > 0.0) scene *= mix(1.0, texture2D(tAO, vUv).r, uAOK);
@@ -272,7 +275,6 @@ void main() {
   }
   vec3 hdr = texture2D(tColor, uv).rgb;
   vec3 bloom = texture2D(tBloom, uv).rgb;
-  hdr = mix(hdr, bloom, uBloom);
   float avgLog = texture2D(tAdapt, vec2(0.5)).r;
   // Luminance-adaptive key (Krawczyk et al. 2005): dim scenes are shown dimmer than daylight, as
   // the eye sees them, instead of being lifted to mid-grey. One unit is about 10^4 cd/m2.
@@ -280,13 +282,15 @@ void main() {
   float keyAd = clamp((1.03 - 2.0 / (2.0 + log(Lcd + 1.0) / log(10.0))) / 0.665, 0.18, 1.1);
   float exposure = uManualExposure > 0.0 ? uManualExposure : uKey * keyAd / exp2(avgLog);
   exposure *= exp2(uExposureComp);
-  vec3 c = hdr * exposure;
+  vec3 c = hdr * (1.0 - uBloom) * exposure;
   // Night vision: dark areas lose colour towards blue (rods); lamp-lit areas keep their warmth.
   if (uNight > 0.0) {
     float lr = dot(c, vec3(0.2126, 0.7152, 0.0722));
     float rod = uNight * 0.65 * (1.0 - smoothstep(0.04, 0.5, lr));
     c = mix(c, vec3(lr) * vec3(0.74, 0.88, 1.18), rod);
   }
+  // Glare (bloom) is added after: the halo round a lamp keeps the lamp's colour.
+  c += bloom * uBloom * exposure;
   // Grading in linear before the view transform.
   float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
   c = mix(vec3(l), c, uSaturation);
@@ -324,5 +328,29 @@ void main() {
   vec3 b = a * 0.5 + 0.25 * (texture2D(tColor, vUv - dir * 0.5).rgb + texture2D(tColor, vUv + dir * 0.5).rgb);
   float lB = luma(b);
   gl_FragColor = vec4((lB < lMin || lB > lMax) ? a : b, 1.0);
+}
+`;
+
+/** The sky, drawn at the far plane after the opaque scene: it fills only pixels no geometry covered. */
+export const skyVert = /* glsl */ `
+uniform float uReversed;
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = vec4(position.xy, uReversed > 0.5 ? 0.0 : 1.0, 1.0);
+}
+`;
+
+export const skyFrag = /* glsl */ `
+${compositeHead}
+void main() {
+  vec4 vp = uInvProj * vec4(vUv * 2.0 - 1.0, uReversed > 0.5 ? 0.5 : 0.0, 1.0);
+  vec3 dir = normalize(mat3(uCamWorld) * (vp.xyz / vp.w));
+  vec3 camPos = uCamWorld[3].xyz;
+  vec3 sunT = transmittanceTo(uSunDir);
+  vec4 cl = cwCloudLayer(camPos, dir, 1e9, sunT);
+  gDiskVis = pow(1.0 - cl.a, 4.0);
+  vec3 col = cwSky(dir, skyRadiance(dir), sunT);
+  gl_FragColor = vec4(mix(col, cl.rgb, cl.a), 1.0);
 }
 `;
