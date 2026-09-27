@@ -124,6 +124,17 @@ export class App {
     this.hud = new Hud(this.ui);
     this.hud.setStartVisible(!p.headless);
     if (p.headless) this.hud.setVisible(false);
+    // The start card answers clicks at once: while loading it says so, then it starts the game.
+    this.hud.onStartClick(() => {
+      if (!this.loaded) {
+        this.hud.nudgeLoading();
+        return;
+      }
+      this.started = true;
+      this.hud.setStartVisible(false);
+      if (this.wantsLock()) this.lock();
+    });
+    const progress = (label: string, frac: number) => this.hud.setLoading(label, frac);
     // Quality: ?q=, else a saved choice or the GPU tier (headless tests render at High).
     this.quality = p.quality && (QUALITY_LEVELS as string[]).includes(p.quality) ? (p.quality as QualityLevel)
       : p.headless ? 'high' : detectQuality(this.renderer);
@@ -132,7 +143,8 @@ export class App {
     this.renderer.setPixelRatio(this.basePixelRatio * (p.headless ? 1 : qs.scale));
     this.world = new World(this.renderer, this.scene);
     const chunkR = Number(new URLSearchParams(location.search).get('chunkR') ?? 0);
-    await this.world.init({ chunkRadius: chunkR || undefined });
+    await this.world.init({ chunkRadius: chunkR || undefined, onProgress: progress });
+    progress('Starting physics', 0.9);
     this.post = new Post(this.renderer, this.world.atmosphere, { msaa: p.headless ? 0 : qs.msaa, fxaa: p.headless || qs.fxaa, ao: qs.ao });
     this.physics = new Physics();
     await this.physics.init();
@@ -141,13 +153,9 @@ export class App {
     this.input = new Input(this.canvas);
     this.fly = new FlyController(this.camera, this.canvas);
     this.fly.enabled = false;
-    this.hud.onStartClick(() => {
-      this.hud.setStartVisible(false);
-      this.input.requestLock();
-    });
     this.canvas.addEventListener('click', () => {
       // The editor and photo mode keep the cursor for their panels (right-drag looks around).
-      if (this.mode !== 'photo' && this.mode !== 'edit' && !this.modes.menuOpen) this.input.requestLock();
+      if (this.wantsLock()) this.lock();
     });
 
     const w = this.world;
@@ -183,7 +191,8 @@ export class App {
       this.hud.setStartVisible(false);
     }
 
-    const [x, z] = p.at ?? [560, -330];
+    // Default spawn: Carver's Row on the highway frontage, facing the carvings.
+    const [x, z] = p.at ?? [-1034, -508];
     this.camera.position.set(x, 1200, z);
     this.player.yaw = THREE.MathUtils.degToRad(-p.yaw);
     this.player.pitch = THREE.MathUtils.degToRad(p.pitch);
@@ -196,6 +205,12 @@ export class App {
 
     window.__cw = { ready: false, stats: () => this.stats(), app: this };
     this.resize();
+    // Esc (or switching windows) frees the mouse: offer a click to carry on.
+    document.addEventListener('pointerlockchange', () => {
+      if (document.pointerLockElement !== this.canvas && this.wantsLock()) this.hud.showResume('Click to continue');
+    });
+    progress('Streaming the town around you', 0.92);
+    this.startedAt = performance.now();
     this.renderer.setAnimationLoop(() => this.frame());
   }
 
@@ -351,7 +366,46 @@ export class App {
     }
   }
 
+  private errorShown = false;
+  /** The start card turns into "Click to explore" once the town around the spawn has streamed in. */
+  private loaded = false;
+  private startedAt = 0;
+  /** The player has clicked past the start card. */
+  private started = false;
+  private prevWantLock = false;
+
+  /** Walking, flying, driving and the drone steer with the captured mouse (photo mode and the editor keep the cursor). */
+  private wantsLock(): boolean {
+    const m = this.mode;
+    return this.started && !this.bench && (m === 'walk' || m === 'fly' || m === 'drive' || m === 'drone')
+      && !this.modes.menuOpen && !this.settings.visible && !this.modes.fpvSetup.visible;
+  }
+
+  /** Capture the mouse. Browsers refuse for a moment right after Esc, so then the card asks for another click. */
+  private lock(): void {
+    void this.input.requestLock().then((ok) => {
+      if (!ok && this.wantsLock() && performance.now() - this.input.unlockedAt < 3000) this.hud.showResume('Click again to continue');
+    });
+  }
+
+  /** Show an error on screen (once) so a player can report it. */
+  showError(err: unknown): void {
+    console.error(err);
+    if (this.errorShown || !this.hud) return;
+    this.errorShown = true;
+    const e = err as { message?: string; stack?: string };
+    this.hud.showError(`${e?.message ?? String(err)}\n${(e?.stack ?? '').split('\n').slice(1, 4).join('\n')}`);
+  }
+
   private frame(): void {
+    try {
+      this.frameInner();
+    } catch (err) {
+      this.showError(err);
+    }
+  }
+
+  private frameInner(): void {
     this.timer.update();
     const dt = Math.min(this.timer.getDelta(), 0.1);
     if (!this.paused) this.time += dt;
@@ -438,6 +492,17 @@ export class App {
       this.startModeDone = true;
       this.setMode(p.mode as Mode);
     }
+    if (!this.loaded && ((this.world.ready && placed) || performance.now() - this.startedAt > 30000)) {
+      this.loaded = true;
+      this.hud.setStartReady();
+    }
+    // Back from a panel, photo mode or the editor without the mouse captured: ask for a click.
+    const want = this.wantsLock();
+    const free = want && !this.input.locked && !this.input.pending;
+    if (free && !this.prevWantLock) this.hud.showResume('Click to continue');
+    this.prevWantLock = want;
+    // If the browser never grants the capture, dragging still looks around; say so.
+    this.hud.setHint(free && !this.hud.startVisible ? 'Click the view to capture the mouse (or drag to look around)' : null);
     if (this.world.ready && placed && walkDone) this.readyFrames++;
     else this.readyFrames = 0;
     if (this.readyFrames > 8 && window.__cw) window.__cw.ready = true;

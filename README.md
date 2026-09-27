@@ -15,7 +15,12 @@ The world is built from real measurements, not by hand:
 
 ## Controls
 
-Click the scene to capture the mouse (Esc releases it). Press **H** to show or hide the help line.
+The start screen shows a loading bar while the town streams in (a few seconds on a fast connection).
+When it reads **Click to explore**, click to capture the mouse. **Esc** releases it, and a click carries on.
+If the browser won't capture the mouse, drag with the left button to look around. You start on
+Carver's Row facing the chainsaw carvings. Press **H** to show or hide the help line.
+
+If something goes wrong, a red box shows the error. Please send that text or a screenshot.
 
 | Key | Anywhere |
 | --- | --- |

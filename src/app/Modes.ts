@@ -18,6 +18,7 @@ export type Mode = 'walk' | 'fly' | 'drive' | 'drone' | 'photo' | 'edit';
 
 /** Landmarks for the spawn menu (N): engine x, z and view yaw (deg, 0 = north, clockwise). */
 export const LANDMARKS: { name: string; x: number; z: number; yaw: number }[] = [
+  { name: "Carver's Row (chainsaw carvings)", x: -1034, z: -508, yaw: 0 },
   { name: 'Downtown: John Hart Hwy at 50th St', x: -880, z: -790, yaw: 75 },
   { name: 'Visitor Centre and carvings', x: -1385, z: -548, yaw: 200 },
   { name: 'Recreation Complex and library', x: 225, z: -440, yaw: 150 },

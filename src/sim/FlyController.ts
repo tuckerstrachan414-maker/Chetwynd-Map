@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-/** Free-flying debug camera: mouse look (pointer lock), WASD + Q/E, Shift to speed up. */
+/** Free-flying camera: mouse look (pointer lock, or left-drag without it), WASD + Q/E, Shift to speed up. */
 export class FlyController {
   yaw = 0;
   pitch = 0;
@@ -20,12 +20,13 @@ export class FlyController {
     window.addEventListener('keydown', (e) => this.keys.add(e.code));
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     window.addEventListener('blur', () => this.keys.clear());
-    dom.addEventListener('click', () => {
-      if (this.enabled && !this.dragLook && document.pointerLockElement !== dom) dom.requestPointerLock?.();
-    });
+    // The app captures the mouse on click; left-dragging also looks around if the browser refuses the capture.
+    let dragging = false;
+    dom.addEventListener('mousedown', () => (dragging = true));
+    window.addEventListener('mouseup', () => (dragging = false));
     document.addEventListener('mousemove', (e) => {
       if (!this.enabled) return;
-      if (this.dragLook ? (e.buttons & 2) === 0 : document.pointerLockElement !== dom) return;
+      if (this.dragLook ? (e.buttons & 2) === 0 : document.pointerLockElement !== dom && !(dragging && e.buttons & 1)) return;
       this.yaw -= e.movementX * this.sensitivity;
       this.pitch = THREE.MathUtils.clamp(this.pitch - e.movementY * this.sensitivity, -1.55, 1.55);
     });

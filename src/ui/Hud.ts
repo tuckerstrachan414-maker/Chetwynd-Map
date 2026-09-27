@@ -5,6 +5,9 @@ export class Hud {
   private readonly status: HTMLDivElement;
   private readonly help: HTMLDivElement;
   private readonly start: HTMLDivElement;
+  private readonly error: HTMLDivElement;
+  private readonly hint: HTMLDivElement;
+  private hintText: string | null = null;
   private readonly tip: HTMLDivElement;
   private tipText = '';
 
@@ -21,13 +24,18 @@ export class Hud {
         <b>F</b> fly · <b>V</b> drive (C camera, Space handbrake, R reset) · <b>G</b> FPV drone (K radio setup, M acro/angle, R reset)<br/>
         <b>P</b> photo · <b>E</b> editor · <b>N</b> go to a landmark · <b>T</b> time (Shift+T back) · <b>Y</b> season · <b>U</b> weather · <b>O</b> settings · <b>H</b> hide help
       </div>
-      <div class="hud-start"><div><h1>Chetwynd, BC</h1><p>Click to explore</p><small>Built from 2024–25 LidarBC LiDAR, OpenStreetMap, Overture Maps and Sentinel-2.</small></div></div>
+      <div class="hud-start loading"><div><h1>Chetwynd, BC</h1><p class="start-msg">Loading…</p><div class="start-bar"><i></i></div><small>Built from 2024–25 LidarBC LiDAR, OpenStreetMap, Overture Maps and Sentinel-2.</small></div></div>
+      <div class="hud-hint hidden"></div>
+      <div class="hud-error hidden"></div>
     `;
     root.appendChild(this.el);
     this.mode = this.el.querySelector('.hud-mode')!;
     this.status = this.el.querySelector('.hud-status')!;
     this.help = this.el.querySelector('.hud-help')!;
     this.start = this.el.querySelector('.hud-start')!;
+    this.error = this.el.querySelector('.hud-error')!;
+    this.error.addEventListener('click', () => this.error.classList.add('hidden'));
+    this.hint = this.el.querySelector('.hud-hint')!;
     this.tip = this.el.querySelector('.hud-tip')!;
   }
 
@@ -59,6 +67,52 @@ export class Hud {
 
   toggleHelp(): void {
     this.help.classList.toggle('hidden');
+  }
+
+  /** Loading progress on the start card (fraction 0..1). */
+  setLoading(label: string, frac: number): void {
+    (this.start.querySelector('.start-msg') as HTMLElement).textContent = `${label}…`;
+    (this.start.querySelector('.start-bar i') as HTMLElement).style.width = `${Math.round(Math.min(1, frac) * 100)}%`;
+  }
+
+  /** Loading finished: the card now starts the game. */
+  setStartReady(): void {
+    this.start.classList.remove('loading');
+    (this.start.querySelector('.start-msg') as HTMLElement).textContent = 'Click to explore';
+  }
+
+  /** The card again, smaller, after the mouse was freed (Esc, a panel, another window). */
+  showResume(msg: string): void {
+    this.start.classList.remove('loading');
+    this.start.classList.add('resume');
+    (this.start.querySelector('.start-msg') as HTMLElement).textContent = msg;
+    this.setStartVisible(true);
+  }
+
+  get startVisible(): boolean {
+    return !this.start.classList.contains('hidden');
+  }
+
+  /** A short line under the crosshair; null hides it. */
+  setHint(text: string | null): void {
+    if (text === this.hintText) return;
+    this.hintText = text;
+    this.hint.classList.toggle('hidden', text === null);
+    this.hint.textContent = text ?? '';
+  }
+
+  /** Brief feedback when the card is clicked while still loading. */
+  nudgeLoading(): void {
+    this.start.classList.remove('nudge');
+    void this.start.offsetWidth;
+    this.start.classList.add('nudge');
+  }
+
+  /** Something went wrong: show it on screen so it can be reported. */
+  showError(msg: string): void {
+    this.error.classList.remove('hidden');
+    this.error.innerHTML = '<b>Something went wrong</b><div class="msg"></div><small>Please send this message (or a screenshot) so it can be fixed. Reloading the page may help. Click to close.</small>';
+    (this.error.querySelector('.msg') as HTMLElement).textContent = msg.slice(0, 600);
   }
 
   setStartVisible(v: boolean): void {

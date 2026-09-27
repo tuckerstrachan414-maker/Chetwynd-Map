@@ -93,7 +93,13 @@ export class World {
     readonly scene: THREE.Scene,
   ) {}
 
-  async init(opts: { chunkRadius?: number }): Promise<void> {
+  async init(opts: { chunkRadius?: number; onProgress?: (label: string, frac: number) => void }): Promise<void> {
+    // Report a step, then give the browser a frame to paint the loading bar before heavy work.
+    const progress = async (label: string, frac: number) => {
+      opts.onProgress?.(label, frac);
+      await new Promise((r) => setTimeout(r, 16));
+    };
+    await progress('Loading terrain', 0.03);
     const [indexJson, imgJson] = await Promise.all([
       fetch(`${WORLD}/terrain/index.json`).then((r) => r.json() as Promise<TerrainIndexJson>),
       fetch(`${WORLD}/imagery/index.json`).then((r) => r.json() as Promise<Record<string, ImageryInfo>>),
@@ -105,6 +111,7 @@ export class World {
       layers: { id: number; tile: number; mean: number[] }[];
     };
     const ids = groundIndex.layers.map((l) => String(l.id).padStart(2, '0'));
+    await progress('Loading ground textures', 0.12);
     const [gA, gN] = await Promise.all([
       loadKtx2Array(this.renderer, ids.map((id) => `./assets/terrain/albedo_${id}.ktx2`), true),
       loadKtx2Array(this.renderer, ids.map((id) => `./assets/terrain/normal_${id}.ktx2`), false),
@@ -121,6 +128,7 @@ export class World {
     Object.assign(this.terrainUniforms, this.terrain.uniforms);
     this.scene.add(this.terrain.mesh);
 
+    await progress('Loading buildings and roads', 0.3);
     const chunkIndex = await fetch(`${WORLD}/chunks/index.json`).then((r) => r.json());
     this.chunks = new ChunkManager(chunkIndex, `${WORLD}/chunks`, {
       facade: createFacadeMaterial(),
@@ -137,6 +145,7 @@ export class World {
     this.roads = new RoadManager(`${WORLD}/roads`, gA, gN, layers.tiles, roadIndex.half, roadIndex.size, new Set(roadIndex.chunks));
     this.scene.add(this.roads.root);
 
+    await progress('Placing street furniture, fences and carvings', 0.38);
     await this.overrides.load(`${WORLD}/overrides.json`);
     this.props = new PropManager(`${WORLD}/props`);
     await this.props.init();
@@ -154,8 +163,10 @@ export class World {
     await this.carvings.init();
     this.scene.add(this.carvings.root);
 
+    await progress('Growing the trees', 0.48);
     const trees = new TreeLibrary(this.renderer);
     await trees.init();
+    await progress('Planting the forest', 0.72);
     const vegIndex = await fetch(`${WORLD}/veg/index.json`).then((r) => r.json());
     this.forest = new Forest(trees, vegIndex, `${WORLD}/veg`);
     this.forest.applyOverrides(this.overrides);
@@ -174,6 +185,7 @@ export class World {
     this.atmosphere = new Atmosphere();
     this.skyEnv = new SkyEnvironment(this.renderer, this.atmosphere);
 
+    await progress('Filling the rivers', 0.8);
     this.water = new WaterManager(`${WORLD}/water`);
     await this.water.init();
     this.water.uniforms.uHaze = this.atmosphere.haze;
