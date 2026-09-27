@@ -14,7 +14,7 @@ from rasterio import features
 from scipy import ndimage
 from shapely import affinity
 from shapely.geometry import MultiPolygon, Polygon, shape
-from shapely.ops import transform as stransform, unary_union
+from shapely.ops import transform as stransform
 from shapely.strtree import STRtree
 
 from . import osm
@@ -289,6 +289,62 @@ def fit_roof(b, R: Rasters):
             "roofInt": round(rint, 3), "L": round(float(L), 2), "W": round(float(W), 2)}
 
 
+MAX_PITCH = {"shed": 35.0, "garage": 40.0, "carport": 20.0, "house": 45.0, "mobile": 25.0, "church": 60.0}
+MAX_HEIGHT = {"shed": 4.5, "garage": 6.5, "carport": 4.0, "house": 12.0, "mobile": 5.0}
+
+
+def long_axis_az(poly):
+    """Azimuth (degrees from north, 0-180) of a footprint's long axis."""
+    rect = Polygon(poly).minimum_rotated_rectangle
+    rc = np.array(rect.exterior.coords)[:4]
+    e1, e2 = rc[1] - rc[0], rc[2] - rc[1]
+    e = e1 if np.linalg.norm(e1) >= np.linalg.norm(e2) else e2
+    return round(math.degrees(math.atan2(e[0], e[1])) % 180, 1)
+
+
+def sanitize_fit(rec):
+    """Keep roof fits physically plausible for the building class.
+
+    Overhanging tree canopy leaks into the DSM over small outbuildings and produces 50-70 degree
+    'roofs' reaching tree height. Out-of-range fits (or very noisy ones on small buildings) are
+    replaced by class defaults built on the fitted eave, clamped to a sensible height.
+    """
+    fit = rec.get("fit")
+    if not fit or fit.get("sanitized"):
+        return False
+    cls = rec["cls"]
+    roof = fit["roof"]
+    W, L = fit["W"], fit["L"]
+    area = W * L
+    max_p = MAX_PITCH.get(cls, 35.0)
+    max_h = MAX_HEIGHT.get(cls)
+    if max_h is None and area < 120:
+        max_h = 9.0
+    pitch = roof.get("pitch", 0.0)
+    bad = pitch > max_p or (max_h is not None and fit["height"] > max_h) or (area < 150 and fit["rms"] > 1.2)
+    if not bad:
+        return False
+    eave = min(fit["eave"], (max_h or fit["eave"] + 3) - 1.0, 3.2 if cls in ("shed", "garage", "carport", "mobile") else 6.5)
+    eave = max(eave, 2.2)
+    az = long_axis_az(rec["poly"])
+    if cls == "shed":
+        p = 12.0
+        roof = {"type": "skillion", "pitch": p, "dirAz": round((az + 90) % 360, 1)}
+        top = eave + math.tan(math.radians(p)) * W
+    elif cls == "carport":
+        roof = {"type": "flat"}
+        top = eave
+    else:
+        p = min(max(pitch, 18.0), max_p, 32.0)
+        top = eave + math.tan(math.radians(p)) * W / 2
+        roof = {"type": "gabled", "pitch": round(p, 1), "ridgeAz": az, "ridge": round(top, 2)}
+    fit["roof"] = roof
+    fit["eave"] = round(eave, 2)
+    fit["height"] = round(min(top, max_h) if max_h else top, 2)
+    fit["sanitized"] = True
+    return True
+
+
 def classify(b, fit, landuse_tree, landuse, pois_tree, pois):
     t = b["tags"].get("building", "yes")
     g = b["geom"]
@@ -366,6 +422,7 @@ def main():
         rec = {"id": b["id"], "src": b["src"], "cls": cls, "poly": coords, "holes": holes, "seed": h32(b["id"]),
                "levels": t.get("building:levels"), "name": name, "fit": fit, "score": b.get("score"),
                "tag": t.get("building"), "roofShapeTag": t.get("roof:shape")}
+        sanitize_fit(rec)
         out.append(rec)
     (CACHE / "buildings").mkdir(exist_ok=True)
     (CACHE / "buildings" / "buildings.json").write_text(json.dumps(out))
@@ -374,5 +431,24 @@ def main():
     print("roofs", collections.Counter(r["fit"]["roof"]["type"] if r["fit"] else None for r in out))
 
 
+def resanitize():
+    """Apply sanitize_fit to an existing buildings.json without refitting."""
+    path = CACHE / "buildings" / "buildings.json"
+    recs = json.loads(path.read_text())
+    fixed = 0
+    for r in recs:
+        # Re-derive ridge orientation for records sanitized by an earlier version.
+        if r.get("fit") and r["fit"].get("sanitized") and r["fit"]["roof"].get("type") == "gabled":
+            r["fit"]["roof"]["ridgeAz"] = long_axis_az(r["poly"])
+        fixed += sanitize_fit(r)
+    path.write_text(json.dumps(recs))
+    print("sanitized", fixed, "of", len(recs))
+
+
 if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "sanitize":
+        resanitize()
+        raise SystemExit
+
     main()

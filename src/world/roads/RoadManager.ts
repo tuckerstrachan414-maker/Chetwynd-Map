@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { gunzip } from '../codec';
+import { buildTrack, tieGeometry } from './RailBuilder';
 
 /** Road surface type -> ground texture array layer (see assets-src/build_terrain_textures.mjs). */
-const LAYER: Record<number, number> = { 0: 6, 1: 5, 2: 4, 3: 7 };
+const LAYER: Record<number, number> = { 0: 6, 1: 5, 2: 4, 3: 7, 12: 12 };
 
 export const roadUniforms = {
   uWet: { value: 0 },
@@ -113,6 +114,11 @@ export interface ColliderMesh {
 
 const STRUCT = 20;
 const TIMBER = 22;
+const TIES = 23;
+const STEEL = 24;
+const RAILHEAD = 25;
+const RAIL = 30;
+const BALLAST = 12;
 
 const structFrag = /* glsl */ `
   // Weathered cast concrete / timber: world-space noise, vertical rain staining, board joints.
@@ -151,6 +157,7 @@ export class RoadManager {
   private readonly surf = new Map<number, THREE.MeshStandardMaterial>();
   private readonly paint = new Map<number, THREE.MeshStandardMaterial>();
   private readonly struct = new Map<number, THREE.MeshStandardMaterial>();
+  private readonly tieGeo = tieGeometry();
   radius = 900;
   /** Called with bridge collider meshes when a chunk loads, and with the key when it unloads. */
   onColliders?: (key: string, meshes: ColliderMesh[]) => void;
@@ -166,11 +173,38 @@ export class RoadManager {
     private readonly available: Set<string>,
   ) {
     this.root.name = 'roads';
-    for (const s of [0, 1, 2, 3]) this.surf.set(s, this.surfaceMaterial(s));
+    for (const s of [0, 1, 2, 3, 12]) this.surf.set(s, this.surfaceMaterial(s));
     this.paint.set(10, this.paintMaterial(new THREE.Color(0.8, 0.8, 0.76)));
     this.paint.set(11, this.paintMaterial(new THREE.Color(0.75, 0.52, 0.07)));
     this.struct.set(STRUCT, this.structureMaterial(0, new THREE.Color(0.5, 0.49, 0.46), 0.92));
     this.struct.set(TIMBER, this.structureMaterial(1, new THREE.Color(0.34, 0.26, 0.19), 0.85));
+    this.struct.set(TIES, this.structureMaterial(1, new THREE.Color(0.2, 0.155, 0.12), 0.92));
+    this.struct.set(STEEL, this.steelMaterial(false));
+    this.struct.set(RAILHEAD, this.steelMaterial(true));
+  }
+
+  /** Rail steel: rusty web and flange; the running surface is polished bright by wheels. */
+  private steelMaterial(head: boolean): THREE.MeshStandardMaterial {
+    const m = new THREE.MeshStandardMaterial({
+      color: head ? new THREE.Color(0.6, 0.6, 0.62) : new THREE.Color(0.3, 0.2, 0.14),
+      metalness: head ? 1.0 : 0.55,
+      roughness: head ? 0.22 : 0.7,
+    });
+    if (!head) {
+      m.onBeforeCompile = (shader) => {
+        shader.vertexShader = shader.vertexShader
+          .replace('#include <common>', '#include <common>\nvarying vec3 vRWPos;')
+          .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvRWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+        shader.fragmentShader = shader.fragmentShader
+          .replace('#include <common>', `#include <common>\nvarying vec3 vRWPos;\n${roadFragPars.replace(/uniform[^;]*;\n/g, '').replace(/varying[^;]*;\n/g, '')}`)
+          .replace('#include <map_fragment>', `
+            float rust = rfbm(vRWPos.xz * 3.0 + vRWPos.y * 5.0);
+            diffuseColor.rgb *= 0.7 + 0.6 * rust;
+          `);
+      };
+      m.customProgramCacheKey = () => 'cw-steel';
+    }
+    return m;
   }
 
   private structureMaterial(kind: number, color: THREE.Color, roughness: number): THREE.MeshStandardMaterial {
@@ -181,8 +215,14 @@ export class RoadManager {
         .replace('#include <common>', `#include <common>\n${roadVert}\nvarying vec3 vRNormal;`)
         .replace('#include <worldpos_vertex>', `#include <worldpos_vertex>
           vAttr = attr;
-          vRWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
-          vRNormal = normalize(mat3(modelMatrix) * objectNormal);`);
+          vec4 rw = vec4(transformed, 1.0);
+          vec3 rn = objectNormal;
+          #ifdef USE_INSTANCING
+            rw = instanceMatrix * rw;
+            rn = mat3(instanceMatrix) * rn;
+          #endif
+          vRWPos = (modelMatrix * rw).xyz;
+          vRNormal = normalize(mat3(modelMatrix) * rn);`);
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>\n${roadFragPars}\nuniform float uKind;\nvarying vec3 vRNormal;`)
         .replace('#include <map_fragment>', structFrag);
@@ -270,6 +310,40 @@ export class RoadManager {
       const type = dv.getUint8(o);
       const flags = dv.getUint8(o + 1);
       const nv = dv.getUint32(o + 4, true);
+      if (type === RAIL) {
+        // Track stations: build ballast, ties and rails here instead of shipping the geometry.
+        const ni = dv.getUint32(o + 8, true);
+        o += 12;
+        const pos = new Float32Array(buf, o, nv * 3);
+        o += nv * 12;
+        const attr = new Float32Array(buf, o, nv * 2);
+        o += nv * 8;
+        const fl = new Uint32Array(buf, o, ni);
+        o += ni * 4;
+        const tr = buildTrack({ pos, attr, flags: fl });
+        if (tr.ballast) {
+          const bm = new THREE.Mesh(tr.ballast, this.surf.get(BALLAST)!);
+          bm.receiveShadow = true;
+          bm.renderOrder = 1;
+          group.add(bm);
+        }
+        for (const [geo, type2] of [[tr.steel, STEEL], [tr.head, RAILHEAD]] as const) {
+          const rm = new THREE.Mesh(geo, this.struct.get(type2)!);
+          rm.castShadow = true;
+          rm.receiveShadow = true;
+          group.add(rm);
+        }
+        if (tr.ties.length) {
+          const tm = new THREE.InstancedMesh(this.tieGeo, this.struct.get(TIES)!, tr.ties.length);
+          tr.ties.forEach((mm, i) => tm.setMatrixAt(i, mm));
+          tm.computeBoundingSphere();
+          tm.castShadow = true;
+          tm.receiveShadow = true;
+          group.add(tm);
+        }
+        if (flags & 1) colliders.push(tr.collider);
+        continue;
+      }
       const ni = dv.getUint32(o + 8, true);
       o += 12;
       const pos = new Float32Array(buf, o, nv * 3);
@@ -322,7 +396,11 @@ export class RoadManager {
       const cz = -this.half + (j + 0.5) * s;
       if (Math.hypot(cx - cam.x, cz - cam.z) > this.radius + 300) {
         this.root.remove(c.group);
-        c.group.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
+        c.group.traverse((o) => {
+          const g = (o as THREE.Mesh).geometry;
+          if (g && g !== this.tieGeo) g.dispose();
+          if ((o as THREE.InstancedMesh).isInstancedMesh) (o as THREE.InstancedMesh).dispose();
+        });
         this.chunks.delete(key);
         this.onUnload?.(key);
       }

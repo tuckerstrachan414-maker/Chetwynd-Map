@@ -43,7 +43,7 @@ const GROUND_GAIN: Record<number, [number, number, number]> = {
   1: [0.9, 0.9, 0.9], // meadow
   2: [0.5, 0.53, 0.52], // deciduous forest floor
   3: [0.48, 0.53, 0.6], // conifer floor
-  4: [0.72, 0.75, 0.82], // dirt
+  4: [0.62, 0.7, 0.85], // dirt: the scan is reddish; local silty clay is grey-brown
   9: [0.88, 0.88, 0.9], // cutbank
   11: [0.6, 0.63, 0.56], // moss
   13: [0.85, 0.85, 0.88], // stubble

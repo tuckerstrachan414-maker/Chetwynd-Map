@@ -9,10 +9,13 @@ camber, concrete slab and parapets (timber for footbridges) and piers on long sp
 as physics colliders.
 
 Binary layout: magic 'CWR1', nGroups u32, then per group:
-  type u8 (0 asphalt, 1 gravel, 2 dirt, 3 concrete, 10 white paint, 11 yellow paint, 20 structural
-  concrete, 22 timber), flags u8 (bit0: collider), pad[2],
+  type u8 (0 asphalt, 1 gravel, 2 dirt, 3 concrete, 10 white paint, 11 yellow paint,
+  20 structural concrete, 22 timber, 30 rail track),
+  flags u8 (bit0: collider), pad[2],
   nVerts u32, nIdx u32, pos f32[3n] (x, y, z engine), attr f32[2n] (lateral 0..1, along m), idx u32[m]
 Triangles face up (or outwards) in engine space.
+A rail track group (type 30) is a polyline instead: pos = stations (x, rail top, z), attr = (ballast
+bed height, distance along the line), idx = per-station flags (1 road crossing, 2 bridge).
 """
 import gzip
 import math
@@ -400,6 +403,199 @@ def bridge_meshes(f_geom, t, w, dem):
     return out
 
 
+GAUGE = 1.435
+TIE_SPACING = 0.6
+
+
+class RailLine:
+    """A track centreline with a smooth vertical profile (rail top) and level-crossing weights."""
+
+    def __init__(self, line: LineString, dem, road_zone, bridge_zone):
+        self.line = line
+        L = line.length
+        self.s = np.arange(0.0, L + 1.0, 1.0)
+        self.s[-1] = min(self.s[-1], L)
+        pts = np.array([line.interpolate(v).coords[0] for v in self.s])
+        z = dem(pts[:, 0], pts[:, 1])
+        # Rails run on smooth vertical curves: heavy smoothing of the LiDAR bed along the track.
+        self.bed = ndimage.gaussian_filter1d(z, 6.0, mode="nearest")
+        from shapely import contains_xy
+        inroad = contains_xy(road_zone, pts[:, 0], pts[:, 1]) if road_zone is not None else np.zeros(len(pts), bool)
+        onbridge = contains_xy(bridge_zone, pts[:, 0], pts[:, 1]) if bridge_zone is not None else np.zeros(len(pts), bool)
+        # Across bridge spans the bed follows the approaches, not the ravine below.
+        if onbridge.any() and not onbridge.all():
+            lab, nb = ndimage.label(onbridge)
+            for k in range(1, nb + 1):
+                idx = np.nonzero(lab == k)[0]
+                a, b = idx[0] - 1, idx[-1] + 1
+                za = self.bed[a] if a >= 0 else self.bed[b]
+                zb = self.bed[b] if b < len(self.bed) else za
+                self.bed[idx] = np.interp(idx, [a, b], [za, zb])
+            z = np.where(onbridge, self.bed, z)
+        self.cross = ndimage.gaussian_filter1d(inroad.astype(float), 2.0, mode="nearest")
+        self.inroad = inroad
+        self.onbridge = onbridge
+        # At a crossing the road surface is at rail-top level; elsewhere the rail top sits 0.2 m above
+        # the ballast/tie level that the LiDAR ground follows.
+        self.top = np.where(inroad, z + 0.035, self.bed + 0.2 * (1 - self.cross) + 0.035 * self.cross)
+
+    def at(self, s_vals):
+        s_vals = np.asarray(s_vals)
+        return (np.interp(s_vals, self.s, self.top), np.interp(s_vals, self.s, self.bed),
+                np.interp(s_vals, self.s, self.inroad.astype(float)) > 0.5,
+                np.interp(s_vals, self.s, self.onbridge.astype(float)) > 0.5)
+
+
+RAIL = 30
+
+
+def rail_polyline(rl: RailLine, piece: LineString):
+    """Compact track record for one chunk-clipped piece: stations every metre with rail-top height,
+    ballast-bed height, distance along the whole line (so ties keep their spacing across chunks)
+    and flags (1 = inside a road crossing, 2 = on a bridge). Ties, rails and ballast are built
+    at runtime from this."""
+    L = piece.length
+    if L < 0.5:
+        return None
+    s0 = rl.line.project(Point(piece.coords[0]))
+    s1 = rl.line.project(Point(piece.coords[-1]))
+    if s1 < s0:
+        piece = LineString(piece.coords[::-1])
+        s0, s1 = s1, s0
+    n = max(2, int(math.ceil(L / 1.0)) + 1)
+    d = np.linspace(0, L, n)
+    pts = np.array([piece.interpolate(v).coords[0] for v in d])
+    sv = s0 + (s1 - s0) * d / max(L, 1e-9)
+    top, bed, inroad, onbridge = rl.at(sv)
+    pos = np.column_stack([pts[:, 0] - ORIGIN_E, top, ORIGIN_N - pts[:, 1]])
+    attr = np.column_stack([bed, sv])
+    flags = inroad.astype(np.uint32) | (onbridge.astype(np.uint32) << 1)
+    return pos, attr, flags
+
+
+PAVED_MATS = (5, 6, 7)  # gravel, asphalt, concrete (pipeline/ground.py)
+CURBED = {"residential", "tertiary", "tertiary_link", "secondary", "secondary_link", "primary", "primary_link", "trunk",
+          "trunk_link", "unclassified", "living_street"}
+
+
+def curb_lines(ways, feats, dem, junction_zones):
+    """Road edges that get a concrete curb (and sidewalk). Returns [(LineString, side, sidewalk)].
+
+    Evidence-based and conservative: only streets in built-up blocks (>= 6 buildings within 60 m),
+    only where the LiDAR shows no roadside ditch, and sidewalks only in commercial/retail land use
+    or along school, civic and recreation frontages. Curbs stop at junctions and driveways.
+    """
+    from shapely.strtree import STRtree as _Tree
+    blds = [f.geom.centroid for f in feats if "building" in f.tags and isinstance(f.geom, (Polygon, MultiPolygon))]
+    btree = _Tree(blds)
+    foot = [f.geom for f in feats if "building" in f.tags and isinstance(f.geom, (Polygon, MultiPolygon))]
+    foot_u = unary_union(foot).buffer(0.5) if foot else Polygon()
+    walk_zone = unary_union(
+        [f.geom for f in feats if isinstance(f.geom, (Polygon, MultiPolygon))
+         and (f.tags.get("landuse") in ("commercial", "retail")
+              or f.tags.get("amenity") in ("school", "college", "townhall", "library", "community_centre", "hospital")
+              or f.tags.get("leisure") in ("sports_centre",))]).buffer(25) if feats else Polygon()
+    drives = unary_union([g.buffer(2.5) for g, t, w in ways if t.get("service") in ("driveway", "parking_aisle")
+                          or t.get("highway") == "service"])
+    gaps = unary_union([z for z in (junction_zones, drives, foot_u) if z is not None and not z.is_empty])
+    with rasterio.open(CACHE / "ground" / "mat1.tif") as f:
+        mat = f.read(1)
+        mt = f.transform
+
+    def mat_at(E, N):
+        c = np.clip(((E - mt.c) / mt.a).astype(int), 0, mat.shape[1] - 1)
+        r = np.clip(((mt.f - N) / -mt.e).astype(int), 0, mat.shape[0] - 1)
+        return mat[r, c]
+
+    out = []
+    town = box(*DETAIL)
+    for g, t, w in ways:
+        if t.get("highway") not in CURBED or not g.intersects(town) or g.length < 12:
+            continue
+        mid = g.interpolate(0.5, normalized=True)
+        near = btree.query(mid.buffer(60))
+        if len(near) < 6:
+            continue
+        for side in (1, -1):
+            edge = g.offset_curve(side * w / 2, quad_segs=4, join_style=2)
+            if edge.is_empty:
+                continue
+            # Ditch test along the edge: ground 2-4 m outside the edge vs the road surface.
+            L = edge.length
+            ds = np.arange(2.0, max(L - 2.0, 2.5), 4.0)
+            if len(ds) < 2:
+                continue
+            P = np.array([edge.interpolate(d).coords[0] for d in ds])
+            T = np.gradient(P, axis=0)
+            T /= np.maximum(np.linalg.norm(T, axis=1, keepdims=True), 1e-9)
+            Nn = np.column_stack([-T[:, 1], T[:, 0]]) * side
+            zin = dem((P - Nn * 0.8)[:, 0], (P - Nn * 0.8)[:, 1])
+            zout = np.median([dem((P + Nn * o)[:, 0], (P + Nn * o)[:, 1]) for o in (2.0, 3.0, 4.0)], axis=0)
+            if np.median(zout - zin) < -0.2:
+                continue
+            # Where the ground beyond the edge is pavement too (lots, aprons, wide shoulders) there
+            # is no curb unless a sidewalk runs there.
+            paved = np.zeros(len(ds), bool)
+            for o in (1.0, 1.8, 2.6):
+                Q = P + Nn * o
+                paved |= np.isin(mat_at(Q[:, 0], Q[:, 1]), PAVED_MATS)
+            sw_edge = edge.intersects(walk_zone)
+            keep = np.ones(len(ds), bool) if sw_edge else ~paved
+            keep = ndimage.binary_opening(keep, np.ones(2)) if keep.sum() < len(keep) else keep
+            lab, nlab = ndimage.label(keep)
+            runs = []
+            for k in range(1, nlab + 1):
+                idx = np.nonzero(lab == k)[0]
+                a0 = max(ds[idx[0]] - 2.0, 0.0)
+                a1 = min(ds[idx[-1]] + 2.0, L)
+                if a1 - a0 >= 6:
+                    runs.append(substring(edge, a0, a1))
+            for run in runs:
+                clipped = run.difference(gaps)
+                parts = [clipped] if isinstance(clipped, LineString) else [x for x in getattr(clipped, "geoms", []) if isinstance(x, LineString)]
+                for part in parts:
+                    if part.length < 4:
+                        continue
+                    out.append((part, side, part.intersects(walk_zone)))
+    print("curb edges", len(out), "km", round(sum(p.length for p, _, _ in out) / 1000, 1),
+          "with sidewalk", round(sum(p.length for p, _, sw in out if sw) / 1000, 1))
+    return out
+
+
+def curb_meshes(piece: LineString, road: LineString, sidewalk: bool, dem):
+    """Curb (and sidewalk) along a road edge piece. Returns {type: Mesh3}."""
+    out = defaultdict(Mesh3)
+    L = piece.length
+    n = max(2, int(math.ceil(L / 1.0)) + 1)
+    d = np.linspace(0, L, n)
+    pts = np.array([piece.interpolate(v).coords[0] for v in d])
+    tang = np.gradient(pts, axis=0)
+    tang /= np.maximum(np.linalg.norm(tang, axis=1, keepdims=True), 1e-9)
+    P = np.column_stack([pts[:, 0] - ORIGIN_E, ORIGIN_N - pts[:, 1]])
+    T = np.column_stack([tang[:, 0], -tang[:, 1]])
+    R = np.column_stack([-T[:, 1], T[:, 0]])
+    Y = dem(pts[:, 0], pts[:, 1]) + 0.03
+    # Which side of the travel direction faces away from the road (engine space)?
+    mid = n // 2
+    q = road.interpolate(road.project(Point(pts[mid])))
+    v = np.array([pts[mid][0] - q.x, -(pts[mid][1] - q.y)])
+    away = 1.0 if float(v @ R[mid]) > 0 else -1.0
+
+    def orient(profile):
+        # Profiles are written with +lateral = away from the road and traversed clockwise in the
+        # (right, up) plane; mirroring onto the left side must also reverse the traversal.
+        return list(profile) if away > 0 else [(-l, h) for l, h in profile[::-1]]
+
+    face = [(0.0, 0.0), (0.02, 0.15), (0.17, 0.155)]
+    if sidewalk:
+        extrude(out[STRUCT], P, R, Y, orient(face))
+        extrude(out[CONCRETE], P, R, Y, orient([(0.17, 0.155), (1.7, 0.18)]))
+        extrude(out[STRUCT], P, R, Y, orient([(1.7, 0.18), (1.72, -0.25)]))
+    else:
+        extrude(out[STRUCT], P, R, Y, orient(face + [(0.2, -0.2)]))
+    return out
+
+
 def face_up(pos, tris):
     """Orient draped triangles so they face up in engine space (x = E, z = -N)."""
     tris = np.asarray(tris).copy()
@@ -487,6 +683,22 @@ def main():
         cj = int((ORIGIN_N - mid.y + H) // NODE_BASE)
         bridge_by_chunk[(ci, cj)].append(bridge_meshes(g, t, w, dem))
     print("bridges", len(bridges))
+    road_zone = unary_union([g.buffer(w / 2 + 0.3, cap_style=2) for g, t, w in ways if t.get("highway") in DRIVE])
+    rails = []
+    for f in feats:
+        t = f.tags
+        if t.get("railway") in ("rail", "siding", "spur") and isinstance(f.geom, LineString) and f.geom.intersects(near_box):
+            if t.get("service") in ("abandoned",) or t.get("usage") == "disused":
+                continue
+            g = f.geom.intersection(near_box)
+            for part in ([g] if isinstance(g, LineString) else [x for x in getattr(g, "geoms", []) if isinstance(x, LineString)]):
+                if part.length > 2:
+                    rails.append(RailLine(part, dem, road_zone, bridge_zone))
+    rail_tree = STRtree([r.line for r in rails]) if rails else None
+    curbs = curb_lines(ways, feats, dem, junction_zones)
+    curb_tree = STRtree([c[0] for c in curbs]) if curbs else None
+    road_tree = STRtree([g for g, t, w in ways])
+    print("rail lines", len(rails), "km", round(sum(r.line.length for r in rails) / 1000, 1))
     mark_tree = STRtree([m[0] for m in marks]) if marks else None
     # Crosswalk bars at mapped crossings on arterials.
     for f in feats:
@@ -590,9 +802,34 @@ def main():
                 for s_, m3 in bm.items():
                     if m3.n:
                         merged[s_].add(*m3.arrays())
+            if curb_tree is not None:
+                for ci_ in curb_tree.query(cb):
+                    part, side, sw = curbs[ci_]
+                    clip = part.intersection(cb)
+                    for piece in ([clip] if isinstance(clip, LineString) else [x for x in getattr(clip, "geoms", []) if isinstance(x, LineString)]):
+                        if piece.length < 1.0:
+                            continue
+                        near_roads = road_tree.query(piece.interpolate(0.5, normalized=True).buffer(12))
+                        road = min((ways[k][0] for k in near_roads), key=lambda g: g.distance(piece), default=None)
+                        if road is None:
+                            continue
+                        for s_, m3 in curb_meshes(piece, road, sw, dem).items():
+                            if m3.n:
+                                merged[s_].add(*m3.arrays())
+            rail_groups = []
+            if rail_tree is not None:
+                for ri in rail_tree.query(cb):
+                    rl = rails[ri]
+                    clip = rl.line.intersection(cb)
+                    for piece in ([clip] if isinstance(clip, LineString) else [x for x in getattr(clip, "geoms", []) if isinstance(x, LineString)]):
+                        r = rail_polyline(rl, piece)
+                        if r is not None:
+                            rail_groups.append(r)
             for s_, m3 in merged.items():
                 pos, attr, tris = m3.arrays()
                 packed.append((s_, COLLIDER, pos, attr, tris))
+            for pos, attr, flags in rail_groups:
+                packed.append((RAIL, COLLIDER, pos, attr, flags))
             if not packed:
                 continue
             buf = [b"CWR1", struct.pack("<I", len(packed))]
