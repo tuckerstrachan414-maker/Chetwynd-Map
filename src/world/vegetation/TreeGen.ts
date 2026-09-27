@@ -120,8 +120,7 @@ function card(b: Builder, p: V3, dir: V3, side: V3, size: number, width: number,
     const q = corners[k][0];
     const radial = sub(q, center);
     const rl = len(radial);
-    let vn = norm([radial[0], radial[1] * 0.6 + 0.35 * rl, radial[2]]);
-    if (dot(vn, nCard) < 0) vn = vn; // card normal flips handled in shader (double sided)
+    const vn = norm([radial[0], radial[1] * 0.6 + 0.35 * rl, radial[2]]);
     const n = norm(add(mul(nCard, 1 - volumeBlend), mul(vn, volumeBlend)));
     const depth = Math.min(1, rl / Math.max(crownR, 0.1));
     const ao = aoBase * (0.45 + 0.55 * Math.pow(depth, 0.8));

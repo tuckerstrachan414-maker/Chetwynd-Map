@@ -173,7 +173,10 @@ export class Forest {
 
   get stats(): Record<string, number> {
     let n0 = 0, n1 = 0, imp = 0;
-    for (const n of this.near) (n.lod === 0 ? (n0 += n.leaves.count) : (n1 += n.leaves.count));
+    for (const n of this.near) {
+      if (n.lod === 0) n0 += n.leaves.count;
+      else n1 += n.leaves.count;
+    }
     for (const c of this.chunks.values()) imp += c.trees.length / STRIDE;
     return { chunks: this.chunks.size, lod0: n0, lod1: n1, trees: imp, shrubs: this.shrubMesh.leaves.count };
   }
