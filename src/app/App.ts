@@ -76,6 +76,7 @@ export class App {
     this.physics = new Physics();
     await this.physics.init();
     this.player = new Player(this.physics);
+    this.player.water = (x, z) => this.world.water.sample(x, z);
     this.input = new Input(this.canvas);
     this.fly = new FlyController(this.camera, this.canvas);
     this.fly.enabled = false;
@@ -94,6 +95,8 @@ export class App {
 
     w.chunks.onChunkLoaded = (key, raw) => this.physics.addBuildings(key, (raw.buildings ?? []) as BuildingRec[]);
     w.chunks.onChunkUnloaded = (key) => this.physics.removeBuildings(key);
+    w.roads.onColliders = (key, meshes) => this.physics.addMeshes(`road_${key}`, meshes);
+    w.roads.onUnload = (key) => this.physics.removeMeshes(`road_${key}`);
 
     const [x, z] = p.at ?? [560, -330];
     this.camera.position.set(x, 1200, z);

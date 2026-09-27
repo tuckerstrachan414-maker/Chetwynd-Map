@@ -105,6 +105,43 @@ interface RoadChunk {
   group: THREE.Group;
 }
 
+/** Triangle mesh flagged as a physics collider (bridge decks, parapets, piers). */
+export interface ColliderMesh {
+  pos: Float32Array;
+  idx: Uint32Array;
+}
+
+const STRUCT = 20;
+const TIMBER = 22;
+
+const structFrag = /* glsl */ `
+  // Weathered cast concrete / timber: world-space noise, vertical rain staining, board joints.
+  vec3 an = abs(vRNormal);
+  vec2 q = an.y > 0.6 ? vRWPos.xz : (an.x > an.z ? vRWPos.zy : vRWPos.xy);
+  float n1 = rfbm(q * 1.7);
+  float n2 = rfbm(q * 9.0);
+  if (uKind < 0.5) {
+    diffuseColor.rgb *= 0.78 + 0.3 * n1 + 0.1 * n2;
+    // Streaks running down vertical faces.
+    float streak = rn(vec2(q.x * 3.0, 0.0)) * smoothstep(0.3, 0.9, rn(vec2(q.x * 0.7, q.y * 0.15)));
+    diffuseColor.rgb *= 1.0 - 0.25 * streak * (1.0 - an.y);
+    // Formwork panel lines.
+    float pan = step(0.97, fract(q.y / 1.2)) + step(0.985, fract(q.x / 2.4));
+    diffuseColor.rgb *= 1.0 - 0.12 * clamp(pan, 0.0, 1.0);
+  } else {
+    // Boards across the deck: joints along the length, grain and weathering.
+    float board = fract(vAttr.y / 0.16);
+    float gap = smoothstep(0.0, 0.06, board) * smoothstep(1.0, 0.94, board);
+    float boardId = floor(vAttr.y / 0.16);
+    float tone = rh(vec2(boardId, 3.1));
+    float grain = rn(vec2(q.x * 0.6, q.y * 25.0)) * 0.5 + rn(q * 4.0) * 0.5;
+    diffuseColor.rgb *= (0.7 + 0.35 * tone) * (0.85 + 0.25 * grain);
+    diffuseColor.rgb *= mix(0.35, 1.0, an.y > 0.6 ? gap : 1.0);
+  }
+  float snowUp = uSnow * smoothstep(0.55, 0.85, vRNormal.y);
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.86, 0.88, 0.92), snowUp);
+`;
+
 /** Streams per-chunk road surface and marking meshes. */
 export class RoadManager {
   readonly root = new THREE.Group();
@@ -113,7 +150,11 @@ export class RoadManager {
   private readonly missing = new Set<string>();
   private readonly surf = new Map<number, THREE.MeshStandardMaterial>();
   private readonly paint = new Map<number, THREE.MeshStandardMaterial>();
+  private readonly struct = new Map<number, THREE.MeshStandardMaterial>();
   radius = 900;
+  /** Called with bridge collider meshes when a chunk loads, and with the key when it unloads. */
+  onColliders?: (key: string, meshes: ColliderMesh[]) => void;
+  onUnload?: (key: string) => void;
 
   constructor(
     private readonly baseUrl: string,
@@ -128,6 +169,26 @@ export class RoadManager {
     for (const s of [0, 1, 2, 3]) this.surf.set(s, this.surfaceMaterial(s));
     this.paint.set(10, this.paintMaterial(new THREE.Color(0.8, 0.8, 0.76)));
     this.paint.set(11, this.paintMaterial(new THREE.Color(0.75, 0.52, 0.07)));
+    this.struct.set(STRUCT, this.structureMaterial(0, new THREE.Color(0.5, 0.49, 0.46), 0.92));
+    this.struct.set(TIMBER, this.structureMaterial(1, new THREE.Color(0.34, 0.26, 0.19), 0.85));
+  }
+
+  private structureMaterial(kind: number, color: THREE.Color, roughness: number): THREE.MeshStandardMaterial {
+    const m = new THREE.MeshStandardMaterial({ color, roughness, metalness: 0 });
+    m.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, roadUniforms, { uKind: { value: kind } });
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>\n${roadVert}\nvarying vec3 vRNormal;`)
+        .replace('#include <worldpos_vertex>', `#include <worldpos_vertex>
+          vAttr = attr;
+          vRWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+          vRNormal = normalize(mat3(modelMatrix) * objectNormal);`);
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>\n${roadFragPars}\nuniform float uKind;\nvarying vec3 vRNormal;`)
+        .replace('#include <map_fragment>', structFrag);
+    };
+    m.customProgramCacheKey = () => `cw-struct-${kind}`;
+    return m;
   }
 
   private surfaceMaterial(s: number): THREE.MeshStandardMaterial {
@@ -204,8 +265,10 @@ export class RoadManager {
     const n = dv.getUint32(4, true);
     let o = 8;
     const group = new THREE.Group();
+    const colliders: ColliderMesh[] = [];
     for (let g = 0; g < n; g++) {
       const type = dv.getUint8(o);
+      const flags = dv.getUint8(o + 1);
       const nv = dv.getUint32(o + 4, true);
       const ni = dv.getUint32(o + 8, true);
       o += 12;
@@ -221,15 +284,20 @@ export class RoadManager {
       geo.setIndex(new THREE.BufferAttribute(idx, 1));
       geo.computeVertexNormals();
       geo.computeBoundingSphere();
-      const mat = type >= 10 ? this.paint.get(type)! : this.surf.get(type)!;
+      const mat = type >= STRUCT ? this.struct.get(type)! : type >= 10 ? this.paint.get(type)! : this.surf.get(type)!;
       const mesh = new THREE.Mesh(geo, mat);
       mesh.receiveShadow = true;
+      if (flags & 1) {
+        mesh.castShadow = true;
+        colliders.push({ pos, idx });
+      }
       mesh.renderOrder = type >= 10 ? 2 : 1;
       group.add(mesh);
     }
     group.name = `roads_${key}`;
     this.root.add(group);
     this.chunks.set(key, { group });
+    if (colliders.length) this.onColliders?.(key, colliders);
   }
 
   update(cam: THREE.Vector3): boolean {
@@ -256,6 +324,7 @@ export class RoadManager {
         this.root.remove(c.group);
         c.group.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
         this.chunks.delete(key);
+        this.onUnload?.(key);
       }
     }
     return pending === 0 && this.loading.size === 0;

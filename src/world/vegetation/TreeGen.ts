@@ -282,8 +282,7 @@ function deciduous(arch: Archetype, seed: number, p: Params, lod: 0 | 1): { bark
     return R * (round ? e : e * (0.75 + 0.25 * t));
   };
   const nBranches = lod === 0 ? (round ? 16 : poplar ? 22 : 18) : round ? 7 : 9;
-  const cellRect = p.cells[0];
-  const clusterSize = poplar ? 1.1 : round ? 0.85 : 0.75;
+  const clusterSize = poplar ? 0.8 : round ? 0.62 : 0.58;
   let az = r() * 6.28;
   for (let k = 0; k < nBranches; k++) {
     const t = (k + r() * 0.8) / nBranches;
@@ -308,7 +307,7 @@ function deciduous(arch: Archetype, seed: number, p: Params, lod: 0 | 1): { bark
     const bw = (s: number) => 0.25 + 0.75 * (s / n);
     if (lod === 0 || k % 2 === 0) tube(bark, pts, pts.map((_, s) => Math.max(0.01, rootR * (1 - s / (n + 0.6)))), lod === 0 ? 4 : 3, bw, phase, 0.6);
     // Sub-branches with leaf clusters.
-    const subs = lod === 0 ? (round ? 5 : 4) : 2;
+    const subs = lod === 0 ? (round ? 7 : 6) : 2;
     for (let s = 0; s < subs; s++) {
       const u = 0.35 + 0.65 * ((s + r() * 0.8) / subs);
       const seg = Math.min(n - 1, Math.floor(u * n));
@@ -321,10 +320,10 @@ function deciduous(arch: Archetype, seed: number, p: Params, lod: 0 | 1): { bark
       const tip = add(pb, mul(sd, sl));
       if (lod === 0) tube(bark, [pb, tip], [Math.max(0.008, rootR * 0.4), 0.006], 3, () => bw(u * n) + 0.2, phase, 0.6);
       // Leaf clusters: crossed cards around the twig tip.
-      const clusters = lod === 0 ? 3 : 1;
+      const clusters = lod === 0 ? 4 : 1;
       for (let c = 0; c < clusters; c++) {
-        const q = add(pb, mul(sd, sl * (0.45 + 0.55 * (c + 1) / clusters)));
-        const sz = clusterSize * (lod === 0 ? 1 : 2.4) * (0.8 + 0.4 * r());
+        const q = add(pb, mul(sd, sl * (0.35 + 0.65 * (c + 1) / clusters)));
+        const sz = clusterSize * (lod === 0 ? 1 : 2.6) * (0.8 + 0.4 * r());
         const outward = norm(add(sub(q, center), [0, 0.6, 0]));
         for (let x = 0; x < 2; x++) {
           const roll = x * Math.PI * 0.5 + r() * 1.2;
@@ -333,9 +332,77 @@ function deciduous(arch: Archetype, seed: number, p: Params, lod: 0 | 1): { bark
           const a2 = cross(a1, outward);
           const side = norm(add(mul(a1, Math.cos(roll)), mul(a2, Math.sin(roll))));
           const dir = norm(add(outward, mul(sd, 0.5)));
-          const start = sub(q, mul(dir, sz * 0.45));
-          card(leaves, start, dir, side, sz, sz * 0.9, cellRect, center, R, bw(u * n) + 0.25, phase, lod === 0 ? 1 : 0.6, 1, 0.8);
+          const start = sub(q, mul(dir, sz * 0.3));
+          card(leaves, start, dir, side, sz, sz, p.cells[Math.floor(r() * p.cells.length) % p.cells.length], center, R,
+            bw(u * n) + 0.25, phase, lod === 0 ? 1 : 0.6, 1, 0.8);
         }
+      }
+    }
+  }
+  fitHeight(bark, leaves, cb, H);
+  return { bark, leaves };
+}
+
+/** Squeeze the crown vertically so the tallest leaf matches the tree's (LiDAR) height. */
+function fitHeight(bark: Builder, leaves: Builder, cb: number, H: number): void {
+  let maxY = 0;
+  for (let k = 1; k < leaves.pos.length; k += 3) maxY = Math.max(maxY, leaves.pos[k]);
+  if (maxY <= H * 1.02) return;
+  const f = (H * 1.02 - cb) / (maxY - cb);
+  for (const b of [bark, leaves]) {
+    for (let k = 1; k < b.pos.length; k += 3) if (b.pos[k] > cb) b.pos[k] = cb + (b.pos[k] - cb) * f;
+  }
+}
+
+/**
+ * Multi-stem shrub (rose, dogwood, hedge) or willow clump: stems fan out from the root crown and
+ * arch outwards, carrying leafy twig cards along their upper two thirds.
+ */
+function shrubGen(arch: Archetype, seed: number, p: Params, lod: 0 | 1): { bark: Builder; leaves: Builder } {
+  const r = rng(seed * 29 + lod * 5);
+  const bark = new Builder();
+  const leaves = new Builder();
+  const { H, R } = p;
+  const willow = arch === 'willow';
+  const nStems = lod === 0 ? (willow ? 15 : 14) : willow ? 6 : 6;
+  const center: V3 = [0, H * 0.5, 0];
+  const segs = lod === 0 ? 5 : 3;
+  const pick = () => p.cells[Math.floor(r() * p.cells.length) % p.cells.length];
+  for (let s = 0; s < nStems; s++) {
+    const az = (s / nStems) * Math.PI * 2 + r() * 0.8;
+    const lean0 = (willow ? 0.12 : 0.2) + r() * (willow ? 0.35 : 0.5);
+    const base: V3 = [Math.cos(az) * R * 0.1 * r(), 0, Math.sin(az) * R * 0.1 * r()];
+    // Inner stems are shorter, which fills the clump out instead of leaving a hollow fan.
+    const L = H * (s % 3 === 0 ? 0.55 + 0.25 * r() : 0.75 + 0.35 * r());
+    const pts: V3[] = [base];
+    let cur = base;
+    for (let k = 1; k <= segs; k++) {
+      const t = k / segs;
+      const lean = lean0 + t * t * (willow ? 0.35 : 0.6);
+      const d: V3 = [Math.cos(az) * Math.sin(lean), Math.cos(lean), Math.sin(az) * Math.sin(lean)];
+      cur = add(cur, add(mul(d, L / segs), [(r() - 0.5) * 0.06 * H, 0, (r() - 0.5) * 0.06 * H]));
+      pts.push(cur);
+    }
+    const phase = r() * 6.28;
+    const r0 = H * (willow ? 0.0065 : 0.0055);
+    tube(bark, pts, pts.map((_, k) => Math.max(0.003, r0 * (1 - (0.75 * k) / segs))), lod === 0 ? 4 : 3, (k) => Math.pow(k / segs, 1.4) * 0.8, phase, 0.8);
+    // Leafy twigs along the upper part of the stem, turned outwards and up.
+    const nCl = lod === 0 ? (willow ? 10 : 8) : 3;
+    for (let c = 0; c < nCl; c++) {
+      const u = 0.18 + 0.82 * ((c + 0.2 + r() * 0.6) / nCl);
+      const f = u * segs;
+      const k = Math.min(segs - 1, Math.floor(f));
+      const q = add(mul(pts[k], 1 - (f - k)), mul(pts[k + 1], f - k));
+      const along = norm(sub(pts[k + 1], pts[k]));
+      const outward = norm(add(add(sub(q, [0, q[1], 0]), [0, 0.35 * H, 0]), mul(along, 0.8)));
+      const sz = (willow ? 0.62 : 0.5) * (0.8 + 0.4 * r()) * (lod === 0 ? 1 : 1.9) * (H / (willow ? 4.5 : 2.0)) ** 0.5;
+      for (let x = 0; x < 2; x++) {
+        const roll = x * Math.PI * 0.5 + r() * 1.2;
+        const ref: V3 = Math.abs(outward[1]) < 0.95 ? [0, 1, 0] : [1, 0, 0];
+        const a1 = norm(cross(outward, ref));
+        const a2 = cross(a1, outward);
+        const side = norm(add(mul(a1, Math.cos(roll)), mul(a2, Math.sin(roll))));
+        card(leaves, sub(q, mul(outward, sz * 0.2)), outward, side, sz, sz, pick(), center, R, 0.4 + 0.6 * u, phase, lod === 0 ? 1 : 0.6, 1, 0.75);
       }
     }
   }
@@ -350,12 +417,13 @@ const REF: Record<Archetype, { H: number; R: number; cb: number }> = {
   poplar: { H: 24, R: 5.0, cb: 0.45 },
   round: { H: 8, R: 3.0, cb: 0.3 },
   shrub: { H: 2, R: 1.2, cb: 0 },
+  willow: { H: 4.5, R: 2.2, cb: 0 },
 };
 
 export function generateTree(arch: Archetype, seed: number, cells: number[][]): TreeModel {
   const ref = REF[arch];
   const p: Params = { H: ref.H, R: ref.R, crownBase: ref.cb, cells };
-  const gen = arch === 'spruce' || arch === 'bspruce' || arch === 'pine' ? conifer : deciduous;
+  const gen = arch === 'spruce' || arch === 'bspruce' || arch === 'pine' ? conifer : arch === 'shrub' || arch === 'willow' ? shrubGen : deciduous;
   const a = gen(arch, seed, p, 0);
   const b = gen(arch, seed, p, 1);
   return {

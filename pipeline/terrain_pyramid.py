@@ -109,11 +109,15 @@ def build(dem1="dem1", dem2="dem2", only_levels=None):
     srcs = [
         Source(lid / (f"{dem1}_final.tif" if (lid / f"{dem1}_final.tif").exists() else f"{dem1}.tif"), feather=40),
         Source(lid / (f"{dem2}_final.tif" if (lid / f"{dem2}_final.tif").exists() else f"{dem2}.tif"), feather=300),
-        Source(CACHE / "horizon" / "dtm.tif", feather=1, fill_holes=False),
+        Source(CACHE / "horizon" / ("dtm_final.tif" if (CACHE / "horizon" / "dtm_final.tif").exists() else "dtm.tif"),
+               feather=1, fill_holes=False),
     ]
     print("sources ready", flush=True)
     out = OUT / "terrain"
     manifest = {}
+    if only_levels is not None and (out / "index.json").exists():
+        # Partial rebuild: keep the other levels' entries.
+        manifest = json.loads((out / "index.json").read_text())["levels"]
     total = 0
     for L in range(ROOT_LEVEL, -1, -1):
         if only_levels is not None and L not in only_levels:

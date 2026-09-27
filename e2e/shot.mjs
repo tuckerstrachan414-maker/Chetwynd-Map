@@ -43,6 +43,10 @@ for (const q of queries.length ? queries : ['']) {
   const stats = await page.evaluate(() => window.__cw.stats && window.__cw.stats());
   const file = join(outDir, `${String(idx++).padStart(2, '0')}_${q.replace(/[^a-z0-9=,.-]+/gi, '_').slice(0, 80) || 'default'}.png`);
   await page.screenshot({ path: file });
+  if (process.env.SHOT_EVAL) {
+    const res = await page.evaluate(process.env.SHOT_EVAL).catch((e) => `eval error: ${e.message}`);
+    console.log('eval:', typeof res === 'string' ? res : JSON.stringify(res));
+  }
   console.log(`${file}  ${((Date.now() - t0) / 1000).toFixed(1)}s  ${JSON.stringify(stats)}`);
 }
 if (errors.length) console.log('--- console errors/warnings ---\n' + errors.slice(0, 50).join('\n'));

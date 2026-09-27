@@ -7,13 +7,19 @@ const RADIUS = 0.3;
 const HALF = 0.6;
 const EYE = 1.68;
 
-/** First-person walker using Rapier's kinematic character controller. */
+export interface WaterQuery {
+  level: number;
+  frozen: boolean;
+}
+
+/** First-person walker using Rapier's kinematic character controller; wades and swims in water. */
 export class Player {
   yaw = 0;
   pitch = 0;
   private body!: RAPIER.RigidBody;
   private collider!: RAPIER.Collider;
   private controller!: RAPIER.KinematicCharacterController;
+  private icePlate!: RAPIER.Collider;
   private vy = 0;
   private grounded = false;
   private bob = 0;
@@ -21,6 +27,11 @@ export class Player {
   walkSpeed = 1.6;
   runSpeed = 4.2;
   sensitivity = 0.0022;
+  /** Water surface under the player (null on land); set by the app. */
+  water?: (x: number, z: number) => WaterQuery | null;
+  /** Depth of water at the player's feet (0 on land). */
+  waterDepth = 0;
+  swimming = false;
 
   constructor(private readonly physics: Physics) {}
 
@@ -29,6 +40,7 @@ export class Player {
     if (this.body) w.removeRigidBody(this.body);
     this.body = w.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(x, groundY + HALF + RADIUS + 0.05, z));
     this.collider = w.createCollider(RAPIER.ColliderDesc.capsule(HALF, RADIUS), this.body);
+    if (!this.icePlate) this.icePlate = w.createCollider(RAPIER.ColliderDesc.cuboid(2.5, 0.06, 2.5).setTranslation(x, -10000, z));
     if (!this.controller) {
       this.controller = w.createCharacterController(0.02);
       this.controller.enableAutostep(0.4, 0.2, true);
@@ -63,14 +75,34 @@ export class Player {
       this.pitch = THREE.MathUtils.clamp(this.pitch - dz(gp.axes[3] ?? 0) * 2.0 * dt, -1.5, 1.5);
     }
     const run = input.down('ShiftLeft') || input.down('ShiftRight') || (gp?.buttons[10]?.pressed ?? false);
-    const speed = run ? this.runSpeed : this.walkSpeed;
+    const t0 = this.body.translation();
+    const feet = t0.y - HALF - RADIUS;
+    const wq = this.water?.(t0.x, t0.z) ?? null;
+    const ice = wq?.frozen ?? false;
+    this.waterDepth = wq && !ice ? Math.max(0, wq.level - feet) : 0;
+    this.swimming = this.waterDepth > 1.35;
+    // Wading slows you down; deep water means swimming at the surface.
+    const drag = THREE.MathUtils.clamp(1 - this.waterDepth * 0.45, 0.4, 1);
+    let speed = (run ? this.runSpeed : this.walkSpeed) * drag;
+    if (this.swimming) speed = run ? 1.7 : 1.0;
     const len = Math.hypot(fx, fz);
     if (len > 1) { fx /= len; fz /= len; }
     const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
     const vx = (fx * c + fz * s) * speed;
     const vz = (-fx * s + fz * c) * speed;
-    if (this.grounded && (input.hit('Space') || (gp?.buttons[0]?.pressed ?? false))) this.vy = 4.6;
-    this.vy -= 9.81 * dt;
+    const jump = input.hit('Space') || (gp?.buttons[0]?.pressed ?? false);
+    if (this.swimming && wq) {
+      // Buoyancy: float with the eyes just above the surface; Space strokes upwards.
+      const target = wq.level - 1.42;
+      this.vy += ((target - feet) * 6 - this.vy * 2.5) * dt;
+      if (jump) this.vy = Math.max(this.vy, 1.6);
+    } else {
+      if (this.grounded && jump) this.vy = 4.6;
+      this.vy -= 9.81 * dt;
+    }
+    // Frozen water is walked on: a small plate collider follows the player at the ice surface.
+    if (ice && wq && feet > wq.level - 0.6) this.icePlate.setTranslation({ x: t0.x, y: wq.level - 0.06, z: t0.z });
+    else this.icePlate.setTranslation({ x: t0.x, y: -10000, z: t0.z });
     const desired = { x: vx * dt, y: this.vy * dt, z: vz * dt };
     this.controller.computeColliderMovement(this.collider, desired);
     const mv = this.controller.computedMovement();
@@ -81,7 +113,7 @@ export class Player {
     // Safety: never fall through the world.
     if (t.y < -1000) this.vy = 0;
     this.position.set(t.x + mv.x, t.y + mv.y - HALF - RADIUS, t.z + mv.z);
-    const moving = this.grounded ? Math.hypot(mv.x, mv.z) / Math.max(dt, 1e-4) : 0;
+    const moving = this.grounded && !this.swimming ? Math.hypot(mv.x, mv.z) / Math.max(dt, 1e-4) : 0;
     this.bob += moving * dt * 1.9;
     const bobY = Math.sin(this.bob * Math.PI) * 0.025 * Math.min(moving / 2, 1.5);
     camera.position.set(this.position.x, this.position.y + EYE + bobY, this.position.z);

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { generateTree } from '../src/world/vegetation/TreeGen';
 
 describe('tree generator', () => {
-  for (const arch of ['spruce', 'bspruce', 'pine', 'aspen', 'poplar', 'round'] as const) {
+  for (const arch of ['spruce', 'bspruce', 'pine', 'aspen', 'poplar', 'round', 'shrub', 'willow'] as const) {
     it(`${arch}: produces bounded LOD0/LOD1 meshes`, () => {
       const t = generateTree(arch, 3, [[0, 0, 1, 1]]);
       const tris0 = (t.lod0.bark.idx.length + t.lod0.leaves.idx.length) / 3;

@@ -30,6 +30,9 @@ uniform float uApMaxKm;
 uniform float uStars;
 uniform float uTime;
 uniform mat3 uStarRot;
+uniform float uUnder;
+uniform vec3 uUnderSigma;
+uniform vec3 uUnderDeep;
 varying vec2 vUv;
 
 float hash13(vec3 p) {
@@ -120,6 +123,12 @@ void main() {
     float nearFade = clamp(w * float(${32}) * 2.0, 0.0, 1.0);
     float T = mix(1.0, ap.a, nearFade);
     col = scene * T + ap.rgb * uApE * nearFade;
+  }
+  if (uUnder > 0.5) {
+    // Camera below the water surface: everything is seen through the water column.
+    float d = isSky ? 40.0 : length(vp.xyz);
+    vec3 Tw = exp(-uUnderSigma * d);
+    col = col * Tw + uUnderDeep * (1.0 - Tw);
   }
   gl_FragColor = vec4(col, 1.0);
 }

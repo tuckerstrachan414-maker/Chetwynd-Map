@@ -14,6 +14,8 @@ import { TerrainStore } from '../world/terrain/TerrainStore';
 import { Forest } from '../world/vegetation/Forest';
 import { TreeLibrary } from '../world/vegetation/TreeLibrary';
 import { vegUniforms } from '../world/vegetation/TreeMaterials';
+import { createRestoreMaterial } from '../world/water/WaterMaterial';
+import { WATER_LAYER, WaterManager } from '../world/water/WaterManager';
 
 export const WORLD = './world';
 
@@ -44,9 +46,11 @@ export class World {
   chunks!: ChunkManager;
   roads!: RoadManager;
   forest!: Forest;
+  water!: WaterManager;
+  private waterRestore!: THREE.Mesh;
   atmosphere!: Atmosphere;
   skyEnv!: SkyEnvironment;
-  private complete = { terrain: false, chunks: false, forest: false, roads: false };
+  private complete = { terrain: false, chunks: false, forest: false, roads: false, water: false };
   season: Season = 'summer';
   private terrainUniforms: Record<string, THREE.IUniform> = {};
 
@@ -107,6 +111,20 @@ export class World {
     this.atmosphere = new Atmosphere();
     this.skyEnv = new SkyEnvironment(this.renderer, this.atmosphere);
 
+    this.water = new WaterManager(`${WORLD}/water`);
+    await this.water.init();
+    this.water.uniforms.uHaze = this.atmosphere.haze;
+    this.water.uniforms.uDebug.value = Number(new URLSearchParams(location.search).get('wdebug') ?? 0);
+    this.water.uniforms.tSkySun.value = this.atmosphere.skyViewSun.texture;
+    this.water.uniforms.tSkyMoon.value = this.atmosphere.skyViewMoon.texture;
+    this.scene.add(this.water.root);
+    // Restores the resolved opaque colour before water is drawn (see Post.render).
+    this.waterRestore = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), createRestoreMaterial());
+    this.waterRestore.frustumCulled = false;
+    this.waterRestore.renderOrder = -1000;
+    this.waterRestore.layers.set(WATER_LAYER);
+    this.scene.add(this.waterRestore);
+
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(4096, 4096);
     const sc = this.sun.shadow.camera;
@@ -123,7 +141,8 @@ export class World {
   }
 
   get ready(): boolean {
-    return this.complete.terrain && this.complete.chunks && this.complete.forest && this.complete.roads;
+    const c = this.complete;
+    return c.terrain && c.chunks && c.forest && c.roads && c.water;
   }
 
   groundHeight(x: number, z: number): number {
@@ -134,6 +153,7 @@ export class World {
     this.season = s;
     const k = SEASONS.indexOf(s);
     this.forest.setSeason(k);
+    this.water.setSeason(k);
     const snow = s === 'winter' ? 1 : 0;
     vegUniforms.uSnow.value = snow;
     buildingUniforms.uSnow.value = snow;
@@ -170,13 +190,54 @@ export class World {
     this.complete.chunks = this.chunks.update(cam);
     this.complete.forest = this.forest.update(cam);
     this.complete.roads = this.roads.update(cam);
+    this.complete.water = this.water.update(cam);
+    this.updateWater(camera, post, time);
     vegUniforms.uTime.value = time;
     buildingUniforms.uTime.value = time;
     buildingUniforms.uNight.value = this.sky.night;
     buildingUniforms.uInterior.value = 0.08 + 0.35 * THREE.MathUtils.clamp(this.sky.sunDir.y * 3, 0, 1);
   }
 
+  private updateWater(camera: THREE.PerspectiveCamera, post: Post, time: number): void {
+    const u = this.water.uniforms;
+    // Underwater view: the composite fogs everything through the water column.
+    const ws = this.water.sample(camera.position.x, camera.position.z);
+    const under = ws !== null && !ws.frozen && camera.position.y < ws.level - 0.02;
+    const cu = post.composite.uniforms;
+    cu.uUnder.value = under ? 1 : 0;
+    if (under) {
+      const lc = this.sky.lightColor;
+      const e = (Math.max(this.sky.lightDir.y, 0) + 0.35) / Math.PI;
+      (cu.uUnderDeep.value as THREE.Vector3).set(0.024 * lc.r * e, 0.034 * lc.g * e, 0.021 * lc.b * e);
+      const turbid = 1 + 1.6 * (u.uTurbid.value as number);
+      (cu.uUnderSigma.value as THREE.Vector3).set(0.62 * turbid, 0.3 * turbid, 0.38 * turbid);
+    }
+    post.secondPass = this.water.visible;
+    (this.waterRestore.material as THREE.ShaderMaterial).uniforms.tSrc.value = post.refrColor.texture;
+    u.tRefr.value = post.refrColor.texture;
+    u.tDepthC.value = post.refrDepth.texture;
+    (u.uProj.value as THREE.Matrix4).copy(camera.projectionMatrix);
+    (u.uInvProj.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
+    (u.uCamWorld.value as THREE.Matrix4).copy(camera.matrixWorld);
+    (u.uResolution.value as THREE.Vector2).set(post.pixelWidth, post.pixelHeight);
+    u.uReversed.value = post.reversed ? 1 : 0;
+    u.uTime.value = time;
+    u.uViewAltKm.value = Math.max(camera.position.y / 1000, 0.01);
+    (u.uSunDir.value as THREE.Vector3).copy(this.sky.sunDir);
+    (u.uMoonDir.value as THREE.Vector3).copy(this.sky.moonDir);
+    u.uSunE.value = SUN_E;
+    u.uMoonE.value = this.sky.moonE;
+    (u.uLightDir.value as THREE.Vector3).copy(this.sky.lightDir);
+    (u.uLightColor.value as THREE.Color).copy(this.sky.lightColor);
+    const sm = this.sun.shadow.map;
+    if (sm?.depthTexture) {
+      u.uShadowMap.value = sm.depthTexture;
+      u.uShadowOn.value = 1;
+    }
+    u.uShadowMatrix.value = this.sun.shadow.matrix;
+  }
+
   stats(): Record<string, unknown> {
-    return { terrain: this.terrain.stats, chunks: this.chunks.stats, forest: this.forest.stats };
+    return { terrain: this.terrain.stats, chunks: this.chunks.stats, forest: this.forest.stats, water: this.water.stats };
   }
 }

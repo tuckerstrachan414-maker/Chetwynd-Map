@@ -83,12 +83,13 @@ export class Forest {
   private readonly impUniforms: Record<string, THREE.IUniform>;
   private readonly quad: THREE.BufferGeometry;
   private readonly near: NearSet[] = [];
-  private readonly shrubMesh: { bark: THREE.InstancedMesh; leaves: THREE.InstancedMesh };
+  private shrubCount = 0;
   private lastNear = new THREE.Vector3(1e9, 0, 0);
   loadRadius = 1900;
   nearRadius = 150;
   lod0Radius = 40;
-  shrubRadius = 90;
+  shrubRadius = 110;
+  shrubLod0Radius = 28;
   readonly leafColor = new Map<number, THREE.Color>();
   readonly barkColor = new Map<number, THREE.Color>();
   season = 0;
@@ -155,19 +156,6 @@ export class Forest {
         this.near.push({ e, lod, bark, leaves });
       }
     }
-    const sh = lib.entry('round', 2);
-    const sb = new THREE.InstancedMesh(sh.geo.bark1, sh.bark, 20000);
-    const sl = new THREE.InstancedMesh(sh.geo.leaves1, sh.foliage, 20000);
-    for (const im of [sb, sl]) {
-      im.count = 0;
-      im.frustumCulled = false;
-      im.castShadow = true;
-      im.receiveShadow = true;
-      im.setColorAt(0, new THREE.Color(1, 1, 1));
-      this.root.add(im);
-    }
-    sl.customDepthMaterial = sh.foliageDepth;
-    this.shrubMesh = { bark: sb, leaves: sl };
     this.setSeason(0);
   }
 
@@ -178,7 +166,7 @@ export class Forest {
       else n1 += n.leaves.count;
     }
     for (const c of this.chunks.values()) imp += c.trees.length / STRIDE;
-    return { chunks: this.chunks.size, lod0: n0, lod1: n1, trees: imp, shrubs: this.shrubMesh.leaves.count };
+    return { chunks: this.chunks.size, lod0: n0, lod1: n1, trees: imp, shrubs: this.shrubCount };
   }
 
   get busy(): boolean {
@@ -194,7 +182,7 @@ export class Forest {
       this.leafColor.set(Number(id), new THREE.Color(c[0], c[1], c[2]));
       this.barkColor.set(Number(id), new THREE.Color(sp.barkTint[0], sp.barkTint[1], sp.barkTint[2]));
     }
-    const repr: Record<Archetype, number> = { spruce: 3, bspruce: 4, pine: 5, aspen: 0, poplar: 1, round: 7, shrub: 7 };
+    const repr: Record<Archetype, number> = { spruce: 3, bspruce: 4, pine: 5, aspen: 0, poplar: 1, round: 7, shrub: 20, willow: 6 };
     this.lib.bakeImpostors(
       (a) => this.leafColor.get(repr[a])!,
       (a) => this.barkColor.get(repr[a])!,
@@ -208,7 +196,7 @@ export class Forest {
   }
 
   private fillTint(c: VegChunk): void {
-    const repr: Record<Archetype, number> = { spruce: 3, bspruce: 4, pine: 5, aspen: 0, poplar: 1, round: 7, shrub: 7 };
+    const repr: Record<Archetype, number> = { spruce: 3, bspruce: 4, pine: 5, aspen: 0, poplar: 1, round: 7, shrub: 20, willow: 6 };
     const g = c.imp!.geometry as THREE.InstancedBufferGeometry;
     const iC = g.getAttribute('iC') as THREE.InstancedBufferAttribute;
     const n = c.trees.length / STRIDE;
@@ -346,9 +334,7 @@ export class Forest {
     const R2 = this.nearRadius * this.nearRadius;
     const s = this.index.size;
     let shrubN = 0;
-    const sh = this.shrubMesh;
-    const shEntry = this.lib.entry('round', 2);
-    const shrubCol = new THREE.Color(0.1, 0.2, 0.06);
+    const tmpC = new THREE.Color();
     for (const [key, c] of this.chunks) {
       const [i, j] = this.available.get(key)!;
       const cx = -this.index.half + (i + 0.5) * s;
@@ -378,30 +364,36 @@ export class Forest {
         n.leaves.setColorAt(idx, lc);
         n.bark.setColorAt(idx, this.barkColor.get(sp)!);
       }
+      // Shrubs: multi-stem bush / willow clump models, full detail close by.
       const sr2 = this.shrubRadius * this.shrubRadius;
+      const s02 = this.shrubLod0Radius * this.shrubLod0Radius;
       const u = c.shrubs;
-      for (let k = 0; k < u.length && shrubN < sh.leaves.instanceMatrix.count; k += STRIDE) {
+      for (let k = 0; k < u.length; k += STRIDE) {
         const dx = u[k] - cam.x;
         const dz = u[k + 2] - cam.z;
-        if (dx * dx + dz * dz > sr2) continue;
-        pos.set(u[k], u[k + 1] - 0.1, u[k + 2]);
+        const d2 = dx * dx + dz * dz;
+        if (d2 > sr2) continue;
+        const sp = u[k + 5];
+        const e = this.lib.entry(archetypeOf(sp), u[k + 6] % VARIANTS);
+        const n = byEntry.get(e)![d2 < s02 ? 0 : 1];
+        if (n.leaves.count >= n.leaves.instanceMatrix.count) continue;
+        const h = Math.max(u[k + 3], 0.5);
+        const rr = THREE.MathUtils.clamp(u[k + 4], h * 0.35, h * 1.1);
+        pos.set(u[k], u[k + 1] - 0.08, u[k + 2]);
         q.setFromAxisAngle(up, u[k + 7]);
-        const h = Math.max(u[k + 3], 0.6);
-        scl.set((h * 0.7) / shEntry.model.R * 1.6, h / shEntry.model.H, (h * 0.7) / shEntry.model.R * 1.6);
+        scl.set(rr / e.model.R, h / e.model.H, rr / e.model.R);
         m.compose(pos, q, scl);
-        sh.leaves.setMatrixAt(shrubN, m);
-        sh.bark.setMatrixAt(shrubN, m);
-        const v = 0.8 + 0.4 * ((u[k + 6] * 37) % 1);
-        sh.leaves.setColorAt(shrubN, shrubCol.clone().multiplyScalar(v));
-        sh.bark.setColorAt(shrubN, new THREE.Color(0.4, 0.35, 0.3));
+        const idx = n.leaves.count++;
+        n.bark.count++;
+        n.leaves.setMatrixAt(idx, m);
+        n.bark.setMatrixAt(idx, m);
+        const lc = this.leafColor.get(sp) ?? this.leafColor.get(20)!;
+        n.leaves.setColorAt(idx, tmpC.copy(lc).multiplyScalar(0.85 + 0.3 * ((u[k + 6] * 0.37) % 1)));
+        n.bark.setColorAt(idx, this.barkColor.get(sp) ?? this.barkColor.get(20)!);
         shrubN++;
       }
     }
-    sh.leaves.count = sh.bark.count = shrubN;
-    for (const im of [sh.leaves, sh.bark]) {
-      im.instanceMatrix.needsUpdate = true;
-      if (im.instanceColor) im.instanceColor.needsUpdate = true;
-    }
+    this.shrubCount = shrubN;
     for (const n of this.near) {
       for (const im of [n.bark, n.leaves]) {
         im.instanceMatrix.needsUpdate = true;

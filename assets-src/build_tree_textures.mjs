@@ -1,4 +1,5 @@
-// Encode prepared foliage/bark images (assets-src/prep_tree_textures.py) to KTX2.
+// Encode prepared foliage/bark images (assets-src/prep_tree_textures.py for conifers and bark,
+// assets-src/gen_leaf_atlases.py for broadleaf twigs) to KTX2.
 import { encodeToKTX2 } from 'ktx2-encoder';
 import sharp from 'sharp';
 import { mkdirSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs';
@@ -12,7 +13,9 @@ const decoder = async (buf) => {
 };
 const jobs = [
   ['spruce_albedo', true], ['spruce_normal', false], ['pine_albedo', true], ['pine_normal', false],
-  ['aspen_albedo', true], ['aspen_normal', false], ['leafy_albedo', true], ['leafy_normal', false],
+  ['aspen_albedo', true], ['aspen_normal', false], ['poplar_albedo', true], ['poplar_normal', false],
+  ['birch_albedo', true], ['birch_normal', false], ['willow_albedo', true], ['willow_normal', false],
+  ['shrub_albedo', true], ['shrub_normal', false],
   ['bark_spruce_albedo', true], ['bark_spruce_normal', false], ['bark_pine_albedo', true], ['bark_pine_normal', false],
   ['bark_birch_albedo', true], ['bark_birch_normal', false],
 ];

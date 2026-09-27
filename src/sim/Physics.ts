@@ -11,6 +11,7 @@ export class Physics {
   R = RAPIER;
   private readonly terrain = new Map<string, RAPIER.Collider>();
   private readonly buildings = new Map<string, RAPIER.Collider[]>();
+  private readonly meshes = new Map<string, RAPIER.Collider[]>();
   private trunks: RAPIER.Collider[] = [];
   private lastTrunkPos = { x: 1e9, z: 1e9 };
 
@@ -84,6 +85,22 @@ export class Physics {
     if (!cols) return;
     for (const c of cols) this.world.removeCollider(c, false);
     this.buildings.delete(key);
+  }
+
+  /** Static triangle-mesh colliders (bridges) for a streamed chunk. */
+  addMeshes(key: string, meshes: { pos: Float32Array; idx: Uint32Array }[]): void {
+    if (this.meshes.has(key)) return;
+    const cols = meshes.map((m) =>
+      this.world.createCollider(RAPIER.ColliderDesc.trimesh(m.pos, m.idx).setFriction(0.9)),
+    );
+    this.meshes.set(key, cols);
+  }
+
+  removeMeshes(key: string): void {
+    const cols = this.meshes.get(key);
+    if (!cols) return;
+    for (const c of cols) this.world.removeCollider(c, false);
+    this.meshes.delete(key);
   }
 
   /** Replace trunk colliders with trees near (x, z). trees: [x, y, z, h, ...] stride 8. */

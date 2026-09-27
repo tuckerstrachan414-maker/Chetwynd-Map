@@ -82,6 +82,22 @@ void gLayer(int id, vec2 wp, float nb, out vec4 A, out vec4 B) {
 
 struct GSurf { vec3 albedo; vec3 nts; float rough; float ao; };
 
+// Winter snow pack: steep banks shed it, wind leaves drifts and thinner patches.
+void applySnow(inout GSurf s, vec3 wp, vec3 N, float dist) {
+  if (uSnow <= 0.0) return;
+  float n1 = tFbm(wp.xz * 0.06);
+  float n2 = tFbm(wp.xz * 0.7 + 5.3);
+  float cover = smoothstep(0.5, 0.78, N.y + (n1 - 0.5) * 0.3 + (n2 - 0.5) * 0.08) * uSnow;
+  // Drift ripples and a faint crust sparkle up close.
+  float drift = tNoise(vec2(dot(wp.xz, vec2(0.8, 0.6)) * 0.9, dot(wp.xz, vec2(-0.6, 0.8)) * 0.15));
+  vec3 snow = vec3(0.84, 0.88, 0.94) * (0.9 + 0.1 * n2) * (0.95 + 0.05 * drift);
+  s.albedo = mix(s.albedo, snow, cover);
+  s.nts.xy = mix(s.nts.xy, vec2(drift - 0.5, n2 - 0.5) * 0.08 * (1.0 - smoothstep(20.0, 120.0, dist)), cover);
+  s.nts = normalize(s.nts);
+  s.rough = mix(s.rough, 0.62, cover);
+  s.ao = mix(s.ao, 1.0, cover * 0.8);
+}
+
 GSurf groundSurface(vec3 wp, vec3 N, float dist) {
   GSurf s;
   vec3 macro = macroAlbedo(wp);
@@ -95,6 +111,7 @@ GSurf groundSurface(vec3 wp, vec3 N, float dist) {
   float detail = (vA.w > 0.99 && vA.w < 1.01) ? 1.0 - smoothstep(uDetailDist * 0.4, uDetailDist, dist) : 0.0;
   if (detail <= 0.0) {
     s.albedo = macro * (0.85 + 0.3 * micro);
+    applySnow(s, wp, N, dist);
     return s;
   }
   // Domain-warp the lookup into the 1 m material grid so cell edges never read as a grid.
@@ -138,6 +155,7 @@ GSurf groundSurface(vec3 wp, vec3 N, float dist) {
   s.nts.xy *= detail;
   s.rough = mix(0.9, B.z, detail);
   s.ao = mix(1.0, B.w, detail);
+  applySnow(s, wp, N, dist);
   return s;
 }
 `;

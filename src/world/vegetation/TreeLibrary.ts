@@ -35,8 +35,14 @@ function toGeometry(p: MeshPart): THREE.BufferGeometry {
   return g;
 }
 
-const FOLIAGE_OF: Record<Archetype, string> = { spruce: 'spruce', bspruce: 'spruce', pine: 'pine', aspen: 'aspen', poplar: 'leafy', round: 'leafy', shrub: 'leafy' };
-const BARK_OF: Record<Archetype, string> = { spruce: 'spruce', bspruce: 'spruce', pine: 'pine', aspen: 'birch', poplar: 'spruce', round: 'spruce', shrub: 'spruce' };
+const FOLIAGE_OF: Record<Archetype, string> = {
+  spruce: 'spruce', bspruce: 'spruce', pine: 'pine', aspen: 'aspen', poplar: 'poplar', round: 'birch', shrub: 'shrub', willow: 'willow',
+};
+const BARK_OF: Record<Archetype, string> = {
+  spruce: 'spruce', bspruce: 'spruce', pine: 'pine', aspen: 'birch', poplar: 'spruce', round: 'spruce', shrub: 'spruce', willow: 'spruce',
+};
+
+const isDeciduous = (a: Archetype) => a !== 'spruce' && a !== 'bspruce' && a !== 'pine';
 
 /** Loads tree textures, generates model variants and bakes impostor atlases. */
 export class TreeLibrary {
@@ -78,7 +84,7 @@ export class TreeLibrary {
       ]);
       for (let v = 0; v < VARIANTS; v++) {
         const model = generateTree(arch, 11 + v * 7 + a * 101, cells[fol] ?? [[0, 0, 1, 1]]);
-        const deciduous = arch === 'aspen' || arch === 'poplar' || arch === 'round';
+        const deciduous = isDeciduous(arch);
         this.entries.push({
           arch,
           variant: v,
@@ -143,7 +149,7 @@ export class TreeLibrary {
     const scene = new THREE.Scene();
     const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 400);
     for (const e of this.entries) {
-      const deciduous = e.arch === 'aspen' || e.arch === 'poplar' || e.arch === 'round';
+      const deciduous = isDeciduous(e.arch);
       const matFor = (isLeaf: boolean, mode: number) =>
         new THREE.ShaderMaterial({
           vertexShader: bakeVert,

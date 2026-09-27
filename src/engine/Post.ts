@@ -48,6 +48,14 @@ export class Post {
   private readonly mUp: THREE.ShaderMaterial;
   readonly final: THREE.ShaderMaterial;
   private readonly mFxaa: THREE.ShaderMaterial;
+  /** Copy of the opaque scene for water refraction/reflection: colour (half float) and raw depth (float). */
+  readonly refrColor: THREE.WebGLRenderTarget;
+  readonly refrDepth: THREE.WebGLRenderTarget;
+  private readonly mCopyColor: THREE.ShaderMaterial;
+  private readonly mCopyDepth: THREE.ShaderMaterial;
+  /** Objects on this layer are drawn after the opaque copy (water). */
+  secondLayer = 1;
+  secondPass = false;
   private width = 1;
   private height = 1;
   private firstFrame = true;
@@ -96,6 +104,9 @@ export class Post {
       uStars: { value: 0 },
       uTime: { value: 0 },
       uStarRot: { value: new THREE.Matrix3() },
+      uUnder: { value: 0 },
+      uUnderSigma: { value: new THREE.Vector3(0.62, 0.3, 0.38) },
+      uUnderDeep: { value: new THREE.Vector3() },
     });
     this.mLum = mk(lumFrag, { tColor: { value: this.compRT.texture } });
     this.mAdapt = mk(adaptFrag, {
@@ -128,6 +139,28 @@ export class Post {
       toneMappingExposure: { value: 1 },
     });
     this.mFxaa = mk(fxaaFrag, { tColor: { value: this.ldrRT.texture }, uTexel: { value: new THREE.Vector2() } });
+    this.refrColor = hdrTarget(1, 1);
+    this.refrDepth = new THREE.WebGLRenderTarget(1, 1, {
+      type: THREE.FloatType,
+      format: THREE.RedFormat,
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      depthBuffer: false,
+    });
+    this.mCopyColor = mk('uniform sampler2D tSrc; varying vec2 vUv; void main() { gl_FragColor = vec4(texture2D(tSrc, vUv).rgb, 1.0); }', {
+      tSrc: { value: this.sceneRT.texture },
+    });
+    this.mCopyDepth = mk('uniform sampler2D tSrc; varying vec2 vUv; void main() { gl_FragColor = vec4(texture2D(tSrc, vUv).r, 0.0, 0.0, 1.0); }', {
+      tSrc: { value: depthTexture },
+    });
+  }
+
+  get pixelWidth(): number {
+    return this.width;
+  }
+
+  get pixelHeight(): number {
+    return this.height;
   }
 
   get reversed(): boolean {
@@ -138,6 +171,8 @@ export class Post {
     this.width = w;
     this.height = h;
     this.sceneRT.setSize(w, h);
+    this.refrColor.setSize(w, h);
+    this.refrDepth.setSize(w, h);
     this.compRT.setSize(w, h);
     this.ldrRT.setSize(w, h);
     let bw = Math.max(1, w >> 1);
@@ -163,6 +198,24 @@ export class Post {
     r.setRenderTarget(this.sceneRT);
     r.clear(true, true, false);
     r.render(scene, camera);
+    if (this.secondPass) {
+      // Copy the resolved opaque frame, then draw the second layer (water) into the same target in a
+      // single render call. A full-screen restore quad on that layer rewrites the colour first, because
+      // resolving a multisampled target invalidates its colour samples; the depth samples are kept.
+      this.pass(this.mCopyColor, this.refrColor);
+      this.pass(this.mCopyDepth, this.refrDepth);
+      const autoClear = r.autoClear;
+      const autoShadow = r.shadowMap.autoUpdate;
+      const layers = camera.layers.mask;
+      r.autoClear = false;
+      r.shadowMap.autoUpdate = false;
+      camera.layers.set(this.secondLayer);
+      r.setRenderTarget(this.sceneRT);
+      r.render(scene, camera);
+      camera.layers.mask = layers;
+      r.autoClear = autoClear;
+      r.shadowMap.autoUpdate = autoShadow;
+    }
     const cu = this.composite.uniforms;
     (cu.uInvProj.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
     (cu.uCamWorld.value as THREE.Matrix4).copy(camera.matrixWorld);
