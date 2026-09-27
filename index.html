@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+        <title>Chetwynd Map</title>
+        <meta
+            name="description"
+            content="Interactive map of Chetwynd, British Columbia: search places, explore the town, get directions with live traffic and see drive times. Powered by TomTom."
+        />
+        <meta name="theme-color" content="#0b5563" />
+        <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    </head>
+    <body>
+        <main class="app">
+            <div id="map" class="map"></div>
+
+            <aside id="panel" class="panel" aria-label="Map tools">
+                <header class="panel__header">
+                    <div class="brand">
+                        <svg class="brand__mark" viewBox="0 0 64 64" aria-hidden="true">
+                            <rect width="64" height="64" rx="14" fill="currentColor" />
+                            <path
+                                d="M32 12c-8.3 0-15 6.5-15 14.6C17 37.4 32 52 32 52s15-14.6 15-25.4C47 18.5 40.3 12 32 12Zm0 20.5a6 6 0 1 1 0-12 6 6 0 0 1 0 12Z"
+                                fill="#fff"
+                            />
+                        </svg>
+                        <div>
+                            <h1 class="brand__title">Chetwynd Map</h1>
+                            <p class="brand__subtitle">Chetwynd, British Columbia</p>
+                        </div>
+                    </div>
+                    <button
+                        id="panel-toggle"
+                        class="icon-button panel__toggle"
+                        type="button"
+                        aria-controls="panel-body"
+                        aria-expanded="true"
+                        aria-label="Collapse panel"
+                    >
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5H7Z" fill="currentColor" /></svg>
+                    </button>
+                </header>
+
+                <search class="search">
+                    <label class="visually-hidden" for="search-input">Search places in and around Chetwynd</label>
+                    <svg class="search__icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path
+                            d="M10.5 3a7.5 7.5 0 0 1 5.93 12.1l4.24 4.23-1.42 1.42-4.23-4.24A7.5 7.5 0 1 1 10.5 3Zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11Z"
+                            fill="currentColor"
+                        />
+                    </svg>
+                    <input
+                        id="search-input"
+                        class="search__input"
+                        type="search"
+                        placeholder="Search Chetwynd…"
+                        spellcheck="false"
+                        enterkeyhint="search"
+                    />
+                    <button id="search-clear" class="icon-button search__clear" type="button" aria-label="Clear search" hidden>
+                        ×
+                    </button>
+                    <ul id="search-suggestions" class="suggestions" hidden></ul>
+                </search>
+
+                <div id="panel-body" class="panel__body">
+                    <div class="tabs" role="tablist" aria-label="Map tools">
+                        <button id="tab-explore" class="tab" role="tab" type="button" aria-controls="view-explore" aria-selected="true">
+                            Explore
+                        </button>
+                        <button
+                            id="tab-directions"
+                            class="tab"
+                            role="tab"
+                            type="button"
+                            aria-controls="view-directions"
+                            aria-selected="false"
+                            tabindex="-1"
+                        >
+                            Directions
+                        </button>
+                        <button
+                            id="tab-drivetime"
+                            class="tab"
+                            role="tab"
+                            type="button"
+                            aria-controls="view-drivetime"
+                            aria-selected="false"
+                            tabindex="-1"
+                        >
+                            Drive time
+                        </button>
+                    </div>
+
+                    <section id="view-explore" class="view" role="tabpanel" aria-labelledby="tab-explore">
+                        <fieldset class="group">
+                            <legend class="visually-hidden">Browse by category</legend>
+                            <div id="category-chips" class="chips"></div>
+                        </fieldset>
+                        <div class="results-header">
+                            <p id="results-status" class="status" role="status" aria-live="polite"></p>
+                            <button id="results-clear" class="link-button" type="button" hidden>Clear</button>
+                        </div>
+                        <ol id="results-list" class="results" aria-label="Places"></ol>
+                        <p class="hint">Pick a category, search for a place, or click anywhere on the map.</p>
+                        <p class="loading" role="status">Loading the TomTom map…</p>
+                    </section>
+
+                    <section id="view-directions" class="view" role="tabpanel" aria-labelledby="tab-directions" hidden>
+                        <div class="route-fields">
+                            <div class="field">
+                                <label for="route-from">From</label>
+                                <div class="field__row">
+                                    <input id="route-from" type="text" placeholder="Search, or use your location" spellcheck="false" />
+                                    <button
+                                        id="route-my-location"
+                                        class="icon-button"
+                                        type="button"
+                                        aria-label="Use my location"
+                                        title="Use my location"
+                                    >
+                                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                                            <path
+                                                d="M11 2h2v3.07A7 7 0 0 1 18.93 11H22v2h-3.07A7 7 0 0 1 13 18.93V22h-2v-3.07A7 7 0 0 1 5.07 13H2v-2h3.07A7 7 0 0 1 11 5.07V2Zm1 5a5 5 0 1 0 0 10 5 5 0 0 0 0-10Zm0 3a2 2 0 1 1 0 4 2 2 0 0 1 0-4Z"
+                                                fill="currentColor"
+                                            />
+                                        </svg>
+                                    </button>
+                                </div>
+                                <ul id="route-from-suggestions" class="suggestions" hidden></ul>
+                            </div>
+                            <div class="field">
+                                <label for="route-to">To</label>
+                                <div class="field__row">
+                                    <input id="route-to" type="text" placeholder="Search for a destination" spellcheck="false" />
+                                    <button
+                                        id="route-swap"
+                                        class="icon-button"
+                                        type="button"
+                                        aria-label="Swap start and destination"
+                                        title="Swap start and destination"
+                                    >
+                                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                                            <path d="M7 3 3 7l4 4V8h9V6H7V3Zm10 10v3H8v2h9v3l4-4-4-4Z" fill="currentColor" />
+                                        </svg>
+                                    </button>
+                                </div>
+                                <ul id="route-to-suggestions" class="suggestions" hidden></ul>
+                            </div>
+                        </div>
+                        <div class="route-settings">
+                            <label class="checkbox"><input id="route-avoid-unpaved" type="checkbox" /> Avoid unpaved roads</label>
+                            <button id="route-clear" class="link-button" type="button">Clear</button>
+                        </div>
+                        <p id="route-status" class="status" role="status" aria-live="polite"></p>
+                        <fieldset class="group">
+                            <legend class="visually-hidden">Route options</legend>
+                            <div id="route-options" class="route-options"></div>
+                        </fieldset>
+                        <ol id="route-steps" class="steps" aria-label="Turn-by-turn directions"></ol>
+                    </section>
+
+                    <section id="view-drivetime" class="view" role="tabpanel" aria-labelledby="tab-drivetime" hidden>
+                        <p class="lead">How far can you drive in…</p>
+                        <fieldset class="group">
+                            <legend class="visually-hidden">Drive time</legend>
+                            <div id="drive-presets" class="segmented"></div>
+                        </fieldset>
+                        <div class="field">
+                            <label for="drive-origin">Starting from</label>
+                            <div class="field__row">
+                                <input id="drive-origin" type="text" spellcheck="false" />
+                                <button
+                                    id="drive-reset-origin"
+                                    class="icon-button"
+                                    type="button"
+                                    aria-label="Start from downtown Chetwynd"
+                                    title="Start from downtown Chetwynd"
+                                >
+                                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                                        <path d="M12 3 2 11h3v9h6v-6h2v6h6v-9h3L12 3Z" fill="currentColor" />
+                                    </svg>
+                                </button>
+                            </div>
+                            <ul id="drive-origin-suggestions" class="suggestions" hidden></ul>
+                        </div>
+                        <p id="drive-status" class="status" role="status" aria-live="polite"></p>
+                        <button id="drive-clear" class="link-button" type="button">Clear areas</button>
+                    </section>
+
+                    <section id="view-place" class="view" aria-label="Place details" hidden></section>
+                </div>
+
+                <footer class="panel__footer">
+                    <span>
+                        Maps, search, routing and traffic by
+                        <a href="https://www.tomtom.com/" target="_blank" rel="noopener noreferrer">TomTom</a>
+                    </span>
+                    <button id="change-key" class="link-button" type="button">API key</button>
+                </footer>
+            </aside>
+
+            <fieldset id="map-toolbar" class="map-toolbar">
+                <legend class="visually-hidden">Map options</legend>
+                <button id="home-button" class="toolbar-button" type="button" title="Show all of Chetwynd">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2 11h3v9h6v-6h2v6h6v-9h3L12 3Z" fill="currentColor" /></svg>
+                    Chetwynd
+                </button>
+                <label class="toolbar-field">
+                    <span class="visually-hidden">Map style</span>
+                    <select id="map-style"></select>
+                </label>
+                <label class="toolbar-toggle"><input id="traffic-flow" type="checkbox" /> Traffic</label>
+                <label class="toolbar-toggle"><input id="traffic-incidents" type="checkbox" /> Incidents</label>
+            </fieldset>
+        </main>
+
+        <div class="toasts">
+            <div id="toasts-status" role="status" aria-live="polite"></div>
+            <div id="toasts-alert" role="alert"></div>
+        </div>
+
+        <p id="fatal-error" class="fatal-error" role="alert" hidden></p>
+
+        <dialog id="key-dialog" class="key-dialog" aria-labelledby="key-title">
+            <form id="key-form" method="dialog">
+                <h2 id="key-title">Connect TomTom Maps</h2>
+                <p id="key-reason" class="key-dialog__reason" hidden></p>
+                <p>
+                    This map runs on TomTom’s maps, search, routing and traffic services. Paste a TomTom API key to load it.
+                    The key is saved only in this browser.
+                </p>
+                <label for="key-input">TomTom API key</label>
+                <input
+                    id="key-input"
+                    name="key"
+                    type="text"
+                    autocomplete="off"
+                    autocapitalize="off"
+                    spellcheck="false"
+                    required
+                    aria-describedby="key-error key-help"
+                />
+                <p id="key-error" class="key-dialog__error" aria-live="polite"></p>
+                <p id="key-help" class="key-dialog__help">
+                    No key yet?
+                    <a href="https://developer.tomtom.com/" target="_blank" rel="noopener noreferrer">Create a free TomTom developer account</a>
+                    and copy the key from your dashboard.
+                </p>
+                <div class="key-dialog__actions">
+                    <button id="key-use-default" class="button" type="button" hidden>Use the site’s key</button>
+                    <button class="button button--primary" type="submit">Load map</button>
+                </div>
+            </form>
+        </dialog>
+
+        <script type="module" src="/src/main.ts"></script>
+    </body>
+</html>
