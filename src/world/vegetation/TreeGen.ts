@@ -73,7 +73,6 @@ const norm = (a: V3): V3 => {
   return [a[0] / l, a[1] / l, a[2] / l];
 };
 const cross = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-const dot = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
 /** Tube along a polyline with per-point radius. */
 function tube(b: Builder, pts: V3[], radii: number[], sides: number, windW: (k: number) => number, phase: number, vScale: number): void {
