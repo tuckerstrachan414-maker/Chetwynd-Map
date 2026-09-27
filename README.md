@@ -23,6 +23,7 @@ Click the scene to capture the mouse (Esc releases it). Press **H** to show or h
 | **Y** | Season: summer → autumn → winter → spring |
 | **U** | Weather: scattered cloud → clear → overcast → rain → snow → fog |
 | **N** | Go to a landmark (then 1–8) |
+| **O** | Settings: graphics quality (Low / Medium / High / Ultra), field of view, mouse sensitivity, benchmark, credits |
 | **F** | Free-fly camera (WASD, Q/E down/up, mouse wheel speed, Shift fast) |
 
 | Mode | Key | Controls |
@@ -37,8 +38,8 @@ Click the scene to capture the mouse (Esc releases it). Press **H** to show or h
 
 A 5-inch freestyle quad: 7:1 thrust-to-weight on a 4S 1300 mAh pack whose voltage sags under
 load, with Betaflight rate curves (RC rate 1.0, super rate 0.7: 667°/s), air mode, 25° camera
-uptilt and a 120° lens. It flies in **acro** (rate) mode by default; **M** toggles self-levelling
-**angle** mode. Hard hits break the props (**R** resets). The OSD shows the timer, voltage and
+uptilt and a 120° lens with FPV barrel distortion (**B** toggles it). It flies in **acro** (rate)
+mode by default; **M** toggles self-levelling **angle** mode. Hard hits break the props (**R** resets). The OSD shows the timer, voltage and
 per-cell voltage, current, mAh used, altitude, speed and an artificial horizon.
 
 - **Radio (recommended):** plug in an EdgeTX/OpenTX transmitter (RadioMaster, Jumper, FrSky,
@@ -71,12 +72,26 @@ Edits apply live and persist in your browser. **Export** downloads `overrides.js
 
 `?at=x,z&yaw=deg&pitch=deg` start position (engine metres from the town centre; yaw 0 = north) ·
 `t=14.5` hour · `date=2025-7-15` date for the sun and moon · `season=summer|autumn|winter|spring` ·
-`weather=clear|scattered|overcast|rain|snow|fog` · `mode=drive|drone|photo|edit` · `fov=70`
+`weather=clear|scattered|overcast|rain|snow|fog` · `mode=drive|drone|photo|edit` · `fov=70` ·
+`q=low|medium|high|ultra` graphics quality · `bench` run the benchmark
 
-## Requirements
+## Requirements and performance
 
 A desktop or laptop browser with WebGL 2 (Chrome, Edge, Firefox, Safari 16+) and a GPU from
-roughly 2016 or later. About 400 MB of data streams in as you move.
+roughly 2016 or later. World data streams in as you move (about 230 MB in total).
+
+Quality is picked from your GPU the first time (change it with **O**):
+
+| Level | Typical GPU | What changes |
+| --- | --- | --- |
+| Low | Older integrated graphics | 70 % resolution, FXAA, no ambient occlusion or water reflections, sparse grass, shorter tree/building distances |
+| Medium | Intel Iris Xe, AMD Radeon 680M/780M | 85 % resolution, 2× MSAA, ambient occlusion, medium grass |
+| High | GTX 1060, RTX, RX 5000+, Apple M1 | Full resolution, 4× MSAA, 4K shadows, full grass and draw distances |
+| Ultra | RTX 3070 / RX 6800 and up, Apple M-Pro/Max | Up to 2× pixel density, denser grass, longer tree and building distances |
+
+Dynamic resolution lowers the render scale a little when a frame runs long, to hold 60 fps (30 fps
+on Low). To measure your machine, open `?bench`: a 70-second flight that reports average and
+1 % low frame rates and copies them to the clipboard.
 
 ## Run locally
 

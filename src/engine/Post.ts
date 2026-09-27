@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { AP_MAX_KM, type Atmosphere } from './sky/Atmosphere';
 import { worldLightUniforms } from './WorldLight';
+import { aoBlurFrag, aoFrag } from './aoGlsl';
 import { dofFrag } from './dofGlsl';
 import { adaptFrag, compositeFrag, downFrag, finalFrag, fxaaFrag, lumFrag, quadVert, upFrag } from './postGlsl';
 
@@ -17,6 +18,8 @@ export interface PostSettings {
   contrast: number;
   /** FPV lens barrel distortion strength (0 = off). */
   barrel: number;
+  /** Screen-space ambient occlusion. */
+  ao: boolean;
 }
 
 function hdrTarget(w: number, h: number, opts: Partial<THREE.RenderTargetOptions> = {}): THREE.WebGLRenderTarget {
@@ -39,6 +42,10 @@ export class Post {
   readonly sceneRT: THREE.WebGLRenderTarget;
   private readonly compRT: THREE.WebGLRenderTarget;
   private readonly dofRT: THREE.WebGLRenderTarget;
+  private readonly aoRT: THREE.WebGLRenderTarget;
+  private readonly aoBlurRT: THREE.WebGLRenderTarget;
+  private readonly mAO: THREE.ShaderMaterial;
+  private readonly mAOBlur: THREE.ShaderMaterial;
   private readonly mDof: THREE.ShaderMaterial;
   /** Photo-mode depth of field (thin lens, metres); null = off. */
   dof: { focal: number; aperture: number; focus: number } | null = null;
@@ -76,7 +83,7 @@ export class Post {
   ) {
     this.settings = {
       msaa: 4, bloom: 0.035, fxaa: false, exposureComp: 0, manualExposure: 0, vignette: 0.22, grain: 0.004,
-      saturation: 1.05, contrast: 1.02, barrel: 0, ...settings,
+      saturation: 1.05, contrast: 1.02, barrel: 0, ao: true, ...settings,
     };
     const reversed = renderer.capabilities.reversedDepthBuffer && renderer.state.buffers.depth.getReversed();
     const depthTexture = new THREE.DepthTexture(1, 1, THREE.FloatType);
@@ -84,6 +91,11 @@ export class Post {
     this.sceneRT = hdrTarget(1, 1, { depthBuffer: true, samples: this.settings.msaa, depthTexture });
     this.compRT = hdrTarget(1, 1);
     this.dofRT = hdrTarget(1, 1);
+    const aoTarget = () => new THREE.WebGLRenderTarget(1, 1, {
+      format: THREE.RedFormat, type: THREE.UnsignedByteType, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: false,
+    });
+    this.aoRT = aoTarget();
+    this.aoBlurRT = aoTarget();
     this.ldrRT = new THREE.WebGLRenderTarget(1, 1, { depthBuffer: false });
     this.lumRT = hdrTarget(128, 64, { generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter });
     for (let k = 0; k < BLOOM_LEVELS; k++) {
@@ -134,6 +146,23 @@ export class Post {
       uPxPerM: { value: 1 },
       uMaxR: { value: 16 },
     });
+    this.mAO = mk(aoFrag, {
+      tDepth: { value: depthTexture },
+      uInvProj: { value: new THREE.Matrix4() },
+      uProjScale: { value: 1 },
+      uReversed: { value: reversed ? 1 : 0 },
+      uTexel: { value: new THREE.Vector2() },
+      uRadius: { value: 1.1 },
+    });
+    this.mAOBlur = mk(aoBlurFrag, {
+      tAO: { value: null },
+      tDepth: { value: depthTexture },
+      uDir: { value: new THREE.Vector2() },
+      uReversed: { value: reversed ? 1 : 0 },
+      uInvProj: { value: new THREE.Matrix4() },
+    });
+    this.composite.uniforms.tAO = { value: this.aoRT.texture };
+    this.composite.uniforms.uAOK = { value: 0 };
     this.mLum = mk(lumFrag, { tColor: { value: this.compRT.texture } });
     this.mAdapt = mk(adaptFrag, {
       tLum: { value: this.lumRT.texture },
@@ -204,6 +233,8 @@ export class Post {
     this.refrDepth.setSize(w, h);
     this.compRT.setSize(w, h);
     this.dofRT.setSize(w, h);
+    this.aoRT.setSize(Math.max(1, w >> 1), Math.max(1, h >> 1));
+    this.aoBlurRT.setSize(Math.max(1, w >> 1), Math.max(1, h >> 1));
     this.ldrRT.setSize(w, h);
     let bw = Math.max(1, w >> 1);
     let bh = Math.max(1, h >> 1);
@@ -248,6 +279,23 @@ export class Post {
       r.shadowMap.autoUpdate = autoShadow;
     }
     const cu = this.composite.uniforms;
+    // Ambient occlusion at half resolution, blurred along x then y (depth-aware).
+    cu.uAOK.value = this.settings.ao ? 0.75 : 0;
+    if (this.settings.ao) {
+      const a = this.mAO.uniforms;
+      (a.uInvProj.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
+      a.uProjScale.value = camera.projectionMatrix.elements[5] * this.aoRT.height * 0.5;
+      (a.uTexel.value as THREE.Vector2).set(1 / this.width, 1 / this.height);
+      this.pass(this.mAO, this.aoRT);
+      const b = this.mAOBlur.uniforms;
+      (b.uInvProj.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
+      b.tAO.value = this.aoRT.texture;
+      (b.uDir.value as THREE.Vector2).set(1 / this.aoRT.width, 0);
+      this.pass(this.mAOBlur, this.aoBlurRT);
+      b.tAO.value = this.aoBlurRT.texture;
+      (b.uDir.value as THREE.Vector2).set(0, 1 / this.aoRT.height);
+      this.pass(this.mAOBlur, this.aoRT);
+    }
     (cu.uInvProj.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
     (cu.uCamWorld.value as THREE.Matrix4).copy(camera.matrixWorld);
     cu.uViewAltKm.value = Math.max(camera.position.y / 1000, 0.01);

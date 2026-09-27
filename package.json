@@ -19,14 +19,9 @@
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.21.0",
-    "comlink": "^4.4.2",
-    "detect-gpu": "^5.0.70",
     "earcut": "^3.2.3",
-    "n8ao": "^2.0.1",
-    "postprocessing": "^6.39.5",
     "straight-skeleton": "^3.0.0",
-    "three": "^0.186.1",
-    "three-mesh-bvh": "^0.9.15"
+    "three": "^0.186.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

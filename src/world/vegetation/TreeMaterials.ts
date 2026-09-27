@@ -105,7 +105,8 @@ export function createFoliageMaterial(o: FoliageOptions): THREE.MeshStandardMate
         float lum = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
         vec3 leafCol = vColor.rgb;
         float var = 0.85 + 0.3 * fract(vInstSeed * 7.13);
-        diffuseColor.rgb = leafCol * (lum / 0.35) * var;
+        // Compress the atlas's luminance range: sunlit tips stay leaf-coloured instead of washing out.
+        diffuseColor.rgb = leafCol * pow(lum / 0.35, 0.6) * var;
         // Leafless deciduous trees in winter.
         if (uDeciduous > 0.5 && uSeason > 1.5 && uSeason < 2.5) discard;
         // Snow load on the upper side of conifer sprays.

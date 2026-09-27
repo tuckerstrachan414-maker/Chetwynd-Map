@@ -205,6 +205,7 @@ export function buildPickup(color = 0xe9ecef): PickupParts {
     trim: worldLit(new THREE.MeshStandardMaterial({ color: 0x0c0c0d, roughness: 0.45 })),
     chrome: worldLit(new THREE.MeshStandardMaterial({ color: 0xdadde0, metalness: 1, roughness: 0.12 })),
     alloy: worldLit(new THREE.MeshStandardMaterial({ color: 0xb9bcc0, metalness: 0.9, roughness: 0.28 })),
+    satin: worldLit(new THREE.MeshStandardMaterial({ color: 0x8e9398, metalness: 0.85, roughness: 0.42 })),
     steel: worldLit(new THREE.MeshStandardMaterial({ color: 0x55585c, metalness: 0.8, roughness: 0.5 })),
     glass: worldLit(new THREE.MeshPhysicalMaterial({
       color: 0x0d1215, metalness: 0, roughness: 0.03, clearcoat: 1, clearcoatRoughness: 0.02, transparent: true, opacity: 0.82,
@@ -328,7 +329,7 @@ export function buildPickup(color = 0xe9ecef): PickupParts {
   add(bumperF, mats.chrome);
   const bumperR = new THREE.BoxGeometry(0.2, 0.2, W - 0.06);
   bumperR.translate(-3.0, -G + 0.6, 0);
-  add(bumperR, mats.chrome);
+  add(bumperR, mats.satin);
   const hitch = new THREE.BoxGeometry(0.25, 0.06, 0.06);
   hitch.translate(-3.12, -G + 0.5, 0);
   add(hitch, mats.steel);

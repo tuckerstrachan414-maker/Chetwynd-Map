@@ -33,10 +33,10 @@ export const SPECIES: Record<number, SpeciesDef> = {
   [SP.MAYDAY]: { arch: 'round', foliage: 'birch', bark: 'spruce', deciduous: true, summer: g(0.14, 0.26, 0.07), autumn: g(0.6, 0.18, 0.06), spring: g(0.5, 0.52, 0.45), barkTint: g(0.45, 0.35, 0.3) },
   [SP.MTNASH]: { arch: 'round', foliage: 'birch', bark: 'birch', deciduous: true, summer: g(0.12, 0.24, 0.06), autumn: g(0.7, 0.2, 0.05), spring: g(0.22, 0.36, 0.08), barkTint: g(0.5, 0.48, 0.45) },
   // Shrubs (LiDAR 0.5-2.5 m vegetation): wild rose, red-osier dogwood, hedges (caragana/lilac), willow.
-  [SP.SH_ROSE]: { arch: 'shrub', foliage: 'shrub', bark: 'spruce', deciduous: true, summer: g(0.13, 0.24, 0.06), autumn: g(0.62, 0.2, 0.05), spring: g(0.22, 0.36, 0.08), barkTint: g(0.55, 0.3, 0.22) },
-  [SP.SH_DOGWOOD]: { arch: 'shrub', foliage: 'shrub', bark: 'spruce', deciduous: true, summer: g(0.12, 0.23, 0.07), autumn: g(0.45, 0.07, 0.06), spring: g(0.2, 0.34, 0.09), barkTint: g(0.75, 0.2, 0.12) },
-  [SP.SH_HEDGE]: { arch: 'shrub', foliage: 'shrub', bark: 'spruce', deciduous: true, summer: g(0.14, 0.26, 0.07), autumn: g(0.6, 0.52, 0.1), spring: g(0.26, 0.4, 0.09), barkTint: g(0.55, 0.5, 0.42) },
-  [SP.SH_WILLOW]: { arch: 'willow', foliage: 'willow', bark: 'spruce', deciduous: true, summer: g(0.16, 0.27, 0.1), autumn: g(0.6, 0.55, 0.12), spring: g(0.27, 0.4, 0.1), barkTint: g(0.7, 0.55, 0.3) },
+  [SP.SH_ROSE]: { arch: 'shrub', foliage: 'shrub', bark: 'spruce', deciduous: true, summer: g(0.1, 0.2, 0.065), autumn: g(0.62, 0.2, 0.05), spring: g(0.22, 0.36, 0.08), barkTint: g(0.55, 0.3, 0.22) },
+  [SP.SH_DOGWOOD]: { arch: 'shrub', foliage: 'shrub', bark: 'spruce', deciduous: true, summer: g(0.095, 0.19, 0.07), autumn: g(0.45, 0.07, 0.06), spring: g(0.2, 0.34, 0.09), barkTint: g(0.75, 0.2, 0.12) },
+  [SP.SH_HEDGE]: { arch: 'shrub', foliage: 'shrub', bark: 'spruce', deciduous: true, summer: g(0.11, 0.21, 0.07), autumn: g(0.6, 0.52, 0.1), spring: g(0.26, 0.4, 0.09), barkTint: g(0.55, 0.5, 0.42) },
+  [SP.SH_WILLOW]: { arch: 'willow', foliage: 'willow', bark: 'spruce', deciduous: true, summer: g(0.13, 0.22, 0.1), autumn: g(0.6, 0.55, 0.12), spring: g(0.27, 0.4, 0.1), barkTint: g(0.7, 0.55, 0.3) },
 };
 
 /** Model archetypes that get generated meshes; species map onto them with tints. */

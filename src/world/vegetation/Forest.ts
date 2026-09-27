@@ -158,7 +158,7 @@ export class Forest {
     // Near instanced meshes per model entry and LOD.
     for (const e of lib.entries) {
       for (const lod of [0, 1] as const) {
-        const cap = lod === 0 ? 400 : 3000;
+        const cap = lod === 0 ? 700 : 6000;
         const bark = new THREE.InstancedMesh(lod === 0 ? e.geo.bark0 : e.geo.bark1, e.bark, cap);
         const leaves = new THREE.InstancedMesh(lod === 0 ? e.geo.leaves0 : e.geo.leaves1, e.foliage, cap);
         for (const im of [bark, leaves]) {
@@ -370,6 +370,15 @@ export class Forest {
       }
     }
     return out;
+  }
+
+  /** Quality preset: full-geometry, LOD0 and shrub radii (m). */
+  setRadii(near: number, lod0: number, shrubs: number): void {
+    this.nearRadius = near;
+    this.lod0Radius = lod0;
+    this.shrubRadius = shrubs;
+    this.impUniforms.uNear.value = near - 10;
+    this.lastNear.set(1e9, 0, 0);
   }
 
   /** Tree arrays (stride 8) of chunks near (x, z), for trunk colliders. */

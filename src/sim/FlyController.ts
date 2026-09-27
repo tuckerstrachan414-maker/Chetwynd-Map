@@ -10,6 +10,8 @@ export class FlyController {
   enabled = true;
   /** Look by dragging with the right mouse button instead of pointer lock (editor, photo mode). */
   dragLook = false;
+  /** Mouse look (radians per pixel). */
+  sensitivity = 0.0022;
 
   constructor(
     private readonly camera: THREE.PerspectiveCamera,
@@ -24,8 +26,8 @@ export class FlyController {
     document.addEventListener('mousemove', (e) => {
       if (!this.enabled) return;
       if (this.dragLook ? (e.buttons & 2) === 0 : document.pointerLockElement !== dom) return;
-      this.yaw -= e.movementX * 0.0022;
-      this.pitch = THREE.MathUtils.clamp(this.pitch - e.movementY * 0.0022, -1.55, 1.55);
+      this.yaw -= e.movementX * this.sensitivity;
+      this.pitch = THREE.MathUtils.clamp(this.pitch - e.movementY * this.sensitivity, -1.55, 1.55);
     });
     dom.addEventListener('wheel', (e) => {
       this.speed = THREE.MathUtils.clamp(this.speed * (e.deltaY > 0 ? 0.85 : 1.18), 1, 3000);

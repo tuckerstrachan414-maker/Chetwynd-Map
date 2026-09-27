@@ -33,8 +33,7 @@ shown in-game (Help → Credits).
 | [three.js](https://threejs.org/) | MIT |
 | [Rapier](https://rapier.rs/) (`@dimforge/rapier3d-compat`) | Apache-2.0 |
 | [Vite](https://vitejs.dev/), [TypeScript](https://www.typescriptlang.org/), [Vitest](https://vitest.dev/) | MIT / Apache-2.0 |
-| [three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh), [earcut](https://github.com/mapbox/earcut), [comlink](https://github.com/GoogleChromeLabs/comlink) | MIT / ISC / Apache-2.0 |
-| [detect-gpu](https://github.com/pmndrs/detect-gpu), [postprocessing](https://github.com/pmndrs/postprocessing), [n8ao](https://github.com/N8python/n8ao) | MIT |
+| [earcut](https://github.com/mapbox/earcut), [straight-skeleton](https://www.npmjs.com/package/straight-skeleton) | ISC / MIT |
 | [ktx2-encoder](https://github.com/gz65555/ktx2-encoder), [sharp](https://sharp.pixelplumbing.com/) (build-time only) | Apache-2.0 |
 | Data pipeline: numpy, scipy, scikit-image, rasterio/GDAL, shapely, pyproj, pyarrow, Pillow | BSD / MIT / Apache-2.0 |
 

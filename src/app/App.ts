@@ -1,12 +1,16 @@
 import * as THREE from 'three';
 import { Post } from '../engine/Post';
+import { DynamicResolution, detectQuality, gpuName, QUALITY, QUALITY_LEVELS, saveQuality, type QualityLevel } from '../engine/Quality';
 import { FlyController } from '../sim/FlyController';
 import { Input } from '../sim/Input';
 import { Physics } from '../sim/Physics';
 import { Player } from '../sim/Player';
 import { Hud } from '../ui/Hud';
+import { Settings } from '../ui/Settings';
+import { grassUniforms } from '../world/vegetation/Grass';
 import type { BuildingRec } from '../world/buildings/BuildingGen';
 import { WEATHERS, type WeatherKind } from '../world/Weather';
+import { Bench } from './Bench';
 import { type Mode, Modes } from './Modes';
 import { readParams, type Params } from './params';
 import { SEASONS, World } from './World';
@@ -18,6 +22,22 @@ declare global {
 }
 
 export type { Mode } from './Modes';
+
+/** Browser storage can be unavailable (private windows, blocked site data). */
+function stored(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function store(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* preference lasts for this session */
+  }
+}
 
 /** Top-level application: renderer, frame loop, control modes, physics and UI. */
 export class App {
@@ -48,6 +68,11 @@ export class App {
   private autoWalk = 0;
   private walked = 0;
   private startModeDone = false;
+  private quality: QualityLevel = 'high';
+  private basePixelRatio = 1;
+  private dynRes: DynamicResolution | null = null;
+  private bench: Bench | null = null;
+  private settings!: Settings;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -61,7 +86,6 @@ export class App {
       reversedDepthBuffer: true,
       preserveDrawingBuffer: this.params.headless,
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.params.headless ? 1 : 1.5));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
@@ -100,10 +124,16 @@ export class App {
     this.hud = new Hud(this.ui);
     this.hud.setStartVisible(!p.headless);
     if (p.headless) this.hud.setVisible(false);
+    // Quality: ?q=, else a saved choice or the GPU tier (headless tests render at High).
+    this.quality = p.quality && (QUALITY_LEVELS as string[]).includes(p.quality) ? (p.quality as QualityLevel)
+      : p.headless ? 'high' : detectQuality(this.renderer);
+    const qs = QUALITY[this.quality];
+    this.basePixelRatio = p.headless ? 1 : Math.min(window.devicePixelRatio, this.quality === 'ultra' ? 2 : 1.5);
+    this.renderer.setPixelRatio(this.basePixelRatio * (p.headless ? 1 : qs.scale));
     this.world = new World(this.renderer, this.scene);
     const chunkR = Number(new URLSearchParams(location.search).get('chunkR') ?? 0);
     await this.world.init({ chunkRadius: chunkR || undefined });
-    this.post = new Post(this.renderer, this.world.atmosphere, { msaa: p.headless ? 0 : 4, fxaa: p.headless });
+    this.post = new Post(this.renderer, this.world.atmosphere, { msaa: p.headless ? 0 : qs.msaa, fxaa: p.headless || qs.fxaa, ao: qs.ao });
     this.physics = new Physics();
     await this.physics.init();
     this.player = new Player(this.physics);
@@ -139,6 +169,18 @@ export class App {
       spawnWalker: (x, z, yaw) => this.spawnWalker(x, z, yaw),
       setPaused: (v) => (this.paused = v),
     });
+    this.applyQuality(this.quality, !!chunkR);
+    // Saved view preferences.
+    const fov = Number(stored('cw.fov') ?? 0);
+    if (fov >= 50 && fov <= 100 && !new URLSearchParams(location.search).has('fov')) this.setFov(fov);
+    this.setSensitivity(Number(stored('cw.sens') ?? 1) || 1);
+    const app = this.settingsHost();
+    this.settings = new Settings(this.ui, app);
+    if (new URLSearchParams(location.search).has('bench')) {
+      this.bench = new Bench(gpuName(this.renderer), this.quality);
+      this.hud.setVisible(false);
+      this.hud.setStartVisible(false);
+    }
 
     const [x, z] = p.at ?? [560, -330];
     this.camera.position.set(x, 1200, z);
@@ -148,12 +190,70 @@ export class App {
     this.fly.pitch = this.player.pitch;
     const q = new URLSearchParams(location.search);
     this.autoWalk = Number(q.get('autowalk') ?? 0);
-    this.mode = p.headless && !this.autoWalk ? 'fly' : 'walk';
+    this.mode = (p.headless && !this.autoWalk) || this.bench ? 'fly' : 'walk';
     this.hud.setMode(this.mode);
 
     window.__cw = { ready: false, stats: () => this.stats(), app: this };
     this.resize();
     this.renderer.setAnimationLoop(() => this.frame());
+  }
+
+  /** Apply a quality preset to everything that can change at run time. */
+  private applyQuality(level: QualityLevel, keepChunkRadius = false): void {
+    const q = QUALITY[level];
+    this.quality = level;
+    const w = this.world;
+    if (w.sun.shadow.mapSize.x !== q.shadowMap) {
+      w.sun.shadow.mapSize.set(q.shadowMap, q.shadowMap);
+      w.sun.shadow.map?.dispose();
+      w.sun.shadow.map = null;
+    }
+    this.post.settings.ao = q.ao;
+    w.water.uniforms.uSSR.value = q.ssr ? 1 : 0;
+    grassUniforms.uDensity.value = q.grass;
+    w.forest.setRadii(q.treeNear, q.treeLod0, q.shrubs);
+    if (!keepChunkRadius) {
+      w.chunks.loadRadius = q.chunks;
+      w.chunks.unloadRadius = q.chunks + 400;
+    }
+    this.dynRes = this.params.headless ? null : new DynamicResolution(q.targetMs);
+    if (!this.params.headless) {
+      this.renderer.setPixelRatio(this.basePixelRatio * q.scale);
+      this.resize();
+    }
+  }
+
+  private setFov(deg: number): void {
+    this.camera.fov = deg;
+    this.camera.updateProjectionMatrix();
+    if (this.modes) this.modes.baseFov = deg;
+  }
+
+  private setSensitivity(k: number): void {
+    this.player.sensitivity = 0.0022 * k;
+    this.fly.sensitivity = 0.0022 * k;
+  }
+
+  private settingsHost() {
+    const app = () => this;
+    return {
+      get quality() { return app().quality; },
+      gpu: gpuName(this.renderer),
+      setQuality: (q: QualityLevel) => {
+        saveQuality(q);
+        this.applyQuality(q);
+      },
+      get fov() { return app().modes.baseFov; },
+      setFov: (d: number) => {
+        this.setFov(d);
+        store('cw.fov', String(d));
+      },
+      get sensitivity() { return app().player.sensitivity / 0.0022; },
+      setSensitivity: (s: number) => {
+        this.setSensitivity(s);
+        store('cw.sens', String(s));
+      },
+    };
   }
 
   stats(): Record<string, unknown> {
@@ -241,6 +341,7 @@ export class App {
     if (i.hit('KeyN')) this.modes.toggleMenu();
     if (this.modes.menuOpen) for (let k = 1; k <= 9; k++) if (i.hit(`Digit${k}`)) this.modes.goto(k - 1);
     if (i.hit('KeyH')) this.hud.toggleHelp();
+    if (i.hit('KeyO')) this.settings.toggle();
     if (i.hit('KeyT')) this.world.sky.hour = (this.world.sky.hour + (i.down('ShiftLeft') ? -1 : 1) + 24) % 24;
     if (i.hit('KeyU')) this.world.weather.cycle();
     if (i.hit('KeyY')) {
@@ -292,6 +393,8 @@ export class App {
       }
     } else if (this.mode !== 'fly') {
       this.modes.update(this.mode, dt, this.time);
+    } else if (this.bench && this.world.ready) {
+      this.bench.update(dt, this.camera, (x, z) => this.world.groundHeight(x, z), this.canvas);
     } else {
       this.fly.update(dt);
       const g = this.world.groundHeight(cam.x, cam.z);
@@ -306,6 +409,11 @@ export class App {
     this.world.update(this.camera, this.post, this.time);
     this.post.render(this.scene, this.camera, dt, this.time);
     this.input.endFrame();
+    // Dynamic resolution holds the frame rate (not while composing a photo).
+    if (this.dynRes && this.mode !== 'photo' && this.world.ready && this.dynRes.update(dt * 1000, dt)) {
+      this.renderer.setPixelRatio(this.basePixelRatio * QUALITY[this.quality].scale * this.dynRes.scale);
+      this.resize();
+    }
 
     if (this.frameCount % 6 === 0) {
       const c = this.world.carvings.lookedAt(this.camera);

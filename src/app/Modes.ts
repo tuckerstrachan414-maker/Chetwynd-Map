@@ -62,7 +62,8 @@ export class Modes {
   readonly photo: PhotoMode;
   readonly editor: Editor;
   private acc = 0;
-  private baseFov: number;
+  /** The walking/flying field of view (restored after the drone and photo mode). */
+  baseFov: number;
   private readonly menu: HTMLDivElement;
   private prevButtons: boolean[] = [];
 

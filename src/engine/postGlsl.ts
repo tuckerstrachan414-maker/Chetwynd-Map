@@ -33,6 +33,8 @@ uniform float uTime;
 uniform mat3 uStarRot;
 uniform float uUnder;
 uniform vec3 uCloudGlow;
+uniform sampler2D tAO;
+uniform float uAOK;
 ${cloudGlsl}
 uniform vec3 uUnderSigma;
 uniform vec3 uUnderDeep;
@@ -139,6 +141,7 @@ void main() {
     col = mix(col, cl.rgb, cl.a);
   } else {
     vec3 scene = texture2D(tColor, vUv).rgb;
+    if (uAOK > 0.0) scene *= mix(1.0, texture2D(tAO, vUv).r, uAOK);
     float dist = length(vp.xyz);
     float w = sqrt(clamp(dist * 0.001 / uApMaxKm, 0.0, 1.0));
     vec4 ap = texture(tAerial, vec3(vUv, w));

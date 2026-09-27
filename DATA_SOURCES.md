@@ -15,6 +15,7 @@ how each kind of object gets into the world and how far to trust it.
 | Surface types (asphalt, gravel, lawn, bare soil, sand, forest floor…) | LiDAR intensity and return structure, Sentinel-2 NDVI, OSM land use | 1 m classes |
 | Rivers, creeks, ponds | LiDAR (water returns and channel shape), OSM waterways, Sentinel-2 water tint | Banks to ~1 m; water levels from LiDAR |
 | Power lines and towers that are mapped | OpenStreetMap | As mapped |
+| Fences | Thin raised lines (0.7–2.6 m) in the LiDAR surface model near buildings, typed by height and density (board, chain-link, rail); plus fences mapped in OSM | Only confident runs of 12 m or more; lines ±1 m |
 | Chainsaw carvings | District of Chetwynd Chainsaw Carving Tour Map, registered to the road network | 149 of 154 placed, typically within 10–20 m; the remaining five have no position in the map and are omitted |
 
 ## Inferred (plausible, correctable in the editor)
@@ -37,7 +38,9 @@ The editor's overlay (E) colours these orange, and every one can be moved, delet
 ## Not included
 
 Building interiors (exteriors only), vehicles other than yours, people, and small private objects
-(sheds under ~10 m², fences, yard ornaments) that no open dataset records.
+that no open dataset records: sheds under ~10 m², yard ornaments, and the many short or see-through
+yard fences the LiDAR cannot resolve (the editor does not place fences yet; they can be added to
+`public/world/props/fences.json` as polylines).
 
 ## Freshness
 

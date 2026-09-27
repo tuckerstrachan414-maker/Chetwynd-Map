@@ -42,6 +42,8 @@ export const grassUniforms = {
   uFieldSize: { value: FIELD_SIZE },
   uPlayer: { value: new THREE.Vector3(0, -1e4, 0) },
   uGrassSeason: { value: 0 },
+  /** Quality density scale (1 = full). */
+  uDensity: { value: 1 },
 };
 
 const grassVert = /* glsl */ `
@@ -50,6 +52,7 @@ uniform sampler2D uFieldI;
 uniform float uFieldSize;
 uniform vec3 uPlayer;
 uniform float uGrassSeason;
+uniform float uDensity;
 uniform float uTime;
 uniform vec2 uWindDir;
 uniform float uWind;
@@ -90,7 +93,7 @@ const grassBegin = /* glsl */ `
   float var = fi.b;
   // Density thins with distance inside each ring; the outer ring skips the inner disk.
   float ring = smoothstep(uOuter, uOuter * 0.7, d) * (uInner > 0.0 ? smoothstep(uInner * 0.85, uInner, d) : 1.0);
-  bool keep = density * ring > h2.x && gtype > 0.5;
+  bool keep = density * ring * uDensity > h2.x && gtype > 0.5;
   // Height and look per grass type: lawn, meadow, woodland, wet sedge, stubble.
   float ht = gtype < 1.5 ? 0.09 : gtype < 2.5 ? 0.55 : gtype < 3.5 ? 0.4 : gtype < 4.5 ? 0.7 : 0.18;
   ht *= (0.6 + 0.8 * h2.y) * (0.75 + 0.5 * var);
