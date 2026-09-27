@@ -94,3 +94,71 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def vegetation():
+    """Pack LiDAR trees and shrubs per chunk: public/world/veg/i_j.bin (gzip).
+
+    Layout: magic 'CWV1', nTrees u32, nShrubs u32, yMin f32, then records of 10 bytes:
+    x u16 (cm in chunk), z u16 (cm), y u16 (cm above yMin), h u8 (0.25 m), r u8 (0.1 m), species u8, seed u8.
+    """
+    import struct
+
+    d = np.load(CACHE / "trees" / "trees.npz")
+    out = OUT / "veg"
+    out.mkdir(parents=True, exist_ok=True)
+    groups = defaultdict(lambda: {"t": [], "s": []})
+    for kind in ("t", "s"):
+        E, N = d[f"{kind}_E"], d[f"{kind}_N"]
+        x = E - ORIGIN_E
+        z = ORIGIN_N - N
+        ci = np.floor((x + H) / NODE_BASE).astype(int)
+        cj = np.floor((z + H) / NODE_BASE).astype(int)
+        order = np.lexsort((cj, ci))
+        keys = np.stack([ci[order], cj[order]], 1)
+        splits = np.flatnonzero(np.any(np.diff(keys, axis=0) != 0, axis=1)) + 1
+        for part in np.split(order, splits):
+            if part.size:
+                groups[(int(ci[part[0]]), int(cj[part[0]]))][kind].append(part)
+    index = []
+    total = 0
+    for (i, j), g in groups.items():
+        x0 = -H + i * NODE_BASE
+        z0 = -H + j * NODE_BASE
+        recs = []
+        ymins = []
+        for kind in ("t", "s"):
+            if g[kind]:
+                idx = np.concatenate(g[kind])
+                ymins.append(np.nanmin(d[f"{kind}_base"][idx]))
+        ymin = float(np.floor(min(ymins))) if ymins else 0.0
+        counts = []
+        for kind in ("t", "s"):
+            if not g[kind]:
+                counts.append(0)
+                continue
+            idx = np.concatenate(g[kind])
+            x = d[f"{kind}_E"][idx] - ORIGIN_E - x0
+            z = ORIGIN_N - d[f"{kind}_N"][idx] - z0
+            base = np.nan_to_num(d[f"{kind}_base"][idx], nan=ymin)
+            rec = np.zeros(idx.size, dtype=[("x", "<u2"), ("z", "<u2"), ("y", "<u2"), ("h", "u1"), ("r", "u1"), ("sp", "u1"), ("seed", "u1")])
+            rec["x"] = np.clip(np.round(x * 100), 0, 65535)
+            rec["z"] = np.clip(np.round(z * 100), 0, 65535)
+            rec["y"] = np.clip(np.round((base - ymin) * 100), 0, 65535)
+            rec["h"] = np.clip(np.round(d[f"{kind}_h"][idx] * 4), 1, 255)
+            rec["r"] = np.clip(np.round(d[f"{kind}_r"][idx] * 10), 1, 255)
+            rec["sp"] = d[f"{kind}_sp"][idx]
+            rec["seed"] = d[f"{kind}_seed"][idx]
+            recs.append(rec.tobytes())
+            counts.append(idx.size)
+        payload = b"CWV1" + struct.pack("<IIf", counts[0], counts[1], ymin) + b"".join(recs)
+        data = gzip.compress(payload, 6)
+        (out / f"{i}_{j}.bin").write_bytes(data)
+        total += len(data)
+        index.append([i, j, counts[0], counts[1]])
+    (out / "index.json").write_text(json.dumps({"size": NODE_BASE, "half": H, "chunks": index}))
+    print("veg chunks", len(index), "MB", round(total / 1e6, 1))
+
+
+if __name__ == "__main__" and False:
+    pass

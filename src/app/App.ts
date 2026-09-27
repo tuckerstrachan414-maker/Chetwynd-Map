@@ -11,6 +11,9 @@ import { TerrainStore } from '../world/terrain/TerrainStore';
 import { readParams, type Params } from './params';
 import { loadKtx2Array } from '../engine/textures/TextureArrays';
 import { ChunkManager } from '../world/ChunkManager';
+import { Forest } from '../world/vegetation/Forest';
+import { TreeLibrary } from '../world/vegetation/TreeLibrary';
+import { vegUniforms } from '../world/vegetation/TreeMaterials';
 import { buildingUniforms, createFacadeMaterial, createRoofMaterial, createTrimMaterial } from '../world/buildings/BuildingMaterials';
 
 const WORLD = './world';
@@ -47,6 +50,8 @@ export class App {
   private controller!: FlyController;
   private chunks!: ChunkManager;
   private chunksComplete = false;
+  private forest!: Forest;
+  private forestComplete = false;
   private readonly sun = new THREE.DirectionalLight(0xffffff, 1);
   private time = 0;
   private readyFrames = 0;
@@ -117,6 +122,12 @@ export class App {
       this.chunks.unloadRadius = chunkR + 400;
     }
 
+    const trees = new TreeLibrary(this.renderer);
+    await trees.init();
+    const vegIndex = await fetch(`${WORLD}/veg/index.json`).then((r) => r.json());
+    this.forest = new Forest(trees, vegIndex, `${WORLD}/veg`);
+    this.scene.add(this.forest.root);
+
     this.atmosphere = new Atmosphere();
     this.post = new Post(this.renderer, this.atmosphere, { msaa: p.headless ? 0 : 4, fxaa: p.headless });
     this.skyEnv = new SkyEnvironment(this.renderer, this.atmosphere);
@@ -162,6 +173,7 @@ export class App {
       cam: this.camera.position.toArray().map((v) => Math.round(v * 10) / 10),
       level: this.store.levelAt(this.camera.position.x, this.camera.position.z),
       chunks: this.chunks.stats,
+      forest: this.forest.stats,
     };
   }
 
@@ -223,12 +235,14 @@ export class App {
 
     this.terrain.update(this.camera);
     this.chunksComplete = this.chunks.update(this.camera.position);
+    this.forestComplete = this.forest.update(this.camera.position);
+    vegUniforms.uTime.value = this.time;
     buildingUniforms.uTime.value = this.time;
     buildingUniforms.uNight.value = this.sky.night;
     buildingUniforms.uInterior.value = 0.08 + 0.35 * THREE.MathUtils.clamp(this.sky.sunDir.y * 3, 0, 1);
     this.post.render(this.scene, this.camera, dt, this.time);
 
-    if (this.terrain.complete && this.placed && this.chunksComplete) this.readyFrames++;
+    if (this.terrain.complete && this.placed && this.chunksComplete && this.forestComplete) this.readyFrames++;
     else this.readyFrames = 0;
     if (this.readyFrames > 8 && window.__cw) window.__cw.ready = true;
     this.ui.dataset.frame = String(this.frameCount);
