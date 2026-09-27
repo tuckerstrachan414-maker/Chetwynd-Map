@@ -7,6 +7,7 @@ interface LoadRes {
   id: number;
   ok: boolean;
   tile: HeightTile;
+  mats: Uint8Array | null;
 }
 
 export interface Resident {
@@ -22,13 +23,15 @@ export interface Resident {
  */
 export class TerrainStore {
   readonly atlas: THREE.DataArrayTexture;
+  /** Ground material IDs per vertex (level-0 nodes only), same slot as the height layer. */
+  readonly matAtlas: THREE.DataArrayTexture;
   readonly n: number;
   private readonly slots: (Resident | null)[];
   private readonly resident = new Map<string, Resident>();
   private readonly wanted = new Map<string, { info: NodeInfo; priority: number }>();
   private readonly loading = new Set<string>();
   private readonly failed = new Set<string>();
-  private readonly pool: WorkerPool<{ url: string }, LoadRes>;
+  private readonly pool: WorkerPool<{ url: string; matUrl?: string }, LoadRes>;
   private frame = 0;
   private pendingUploads = 0;
   maxConcurrent = 6;
@@ -37,6 +40,7 @@ export class TerrainStore {
     readonly index: TerrainIndex,
     private readonly baseUrl: string,
     readonly slotCount: number,
+    private readonly materialUrl?: string,
   ) {
     this.n = index.nodeRes + 1;
     const data = new Float32Array(this.n * this.n * slotCount);
@@ -48,6 +52,14 @@ export class TerrainStore {
     this.atlas.magFilter = THREE.LinearFilter;
     this.atlas.generateMipmaps = false;
     this.atlas.needsUpdate = true;
+    this.matAtlas = new THREE.DataArrayTexture(new Uint8Array(this.n * this.n * slotCount), this.n, this.n, slotCount);
+    this.matAtlas.format = THREE.RedIntegerFormat;
+    this.matAtlas.type = THREE.UnsignedByteType;
+    this.matAtlas.internalFormat = 'R8UI';
+    this.matAtlas.minFilter = THREE.NearestFilter;
+    this.matAtlas.magFilter = THREE.NearestFilter;
+    this.matAtlas.generateMipmaps = false;
+    this.matAtlas.needsUpdate = true;
     this.slots = new Array(slotCount).fill(null);
     const workers = Math.max(2, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
     this.pool = new WorkerPool(
@@ -91,9 +103,10 @@ export class TerrainStore {
       if (this.loading.size >= this.maxConcurrent) break;
       this.loading.add(key);
       const url = new URL(`${this.baseUrl}/${info.level}/${info.i}_${info.j}.bin`, location.href).href;
+      const matUrl = info.level === 0 && this.materialUrl ? new URL(`${this.materialUrl}/0/${info.i}_${info.j}.bin`, location.href).href : undefined;
       this.pool
-        .run({ url })
-        .then((res) => this.onLoaded(key, info, res.tile))
+        .run({ url, matUrl })
+        .then((res) => this.onLoaded(key, info, res.tile, res.mats))
         .catch((err) => {
           console.warn('terrain load failed', key, err);
           this.failed.add(key);
@@ -102,7 +115,7 @@ export class TerrainStore {
     }
   }
 
-  private onLoaded(key: string, info: NodeInfo, tile: HeightTile): void {
+  private onLoaded(key: string, info: NodeInfo, tile: HeightTile, mats: Uint8Array | null): void {
     const slot = this.allocSlot();
     if (slot < 0) return;
     const r: Resident = { info, slot, heights: tile.heights, lastUsed: this.frame };
@@ -110,6 +123,11 @@ export class TerrainStore {
     (this.atlas.image.data as Float32Array).set(tile.heights, slot * layerSize);
     this.atlas.addLayerUpdate(slot);
     this.atlas.needsUpdate = true;
+    if (mats && mats.length === layerSize) {
+      (this.matAtlas.image.data as Uint8Array).set(mats, slot * layerSize);
+      this.matAtlas.addLayerUpdate(slot);
+      this.matAtlas.needsUpdate = true;
+    }
     this.slots[slot] = r;
     this.resident.set(key, r);
   }

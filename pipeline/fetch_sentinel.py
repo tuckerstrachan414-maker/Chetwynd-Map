@@ -54,3 +54,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def winter():
+    """Late-March scene with snow on the ground: leafless deciduous stands read bright, conifers dark."""
+    global SCENES
+    SCENES = ["S2A_10UEG_20250330_1_L2A"]
+    w = int((NEAR[2] - NEAR[0]) / 5)
+    h = int((NEAR[3] - NEAR[1]) / 5)
+    build("near_winter", from_origin(NEAR[0], NEAR[3], 5, 5), w, h)

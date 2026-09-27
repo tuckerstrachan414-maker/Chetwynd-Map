@@ -1,0 +1,245 @@
+{
+ "size": 1024,
+ "layers": [
+  {
+   "id": 0,
+   "name": "lawn",
+   "tile": 2,
+   "mean": [
+    56,
+    75,
+    35
+   ],
+   "source": {
+    "source": "acg",
+    "asset": "Grass002",
+    "license": "CC0"
+   }
+  },
+  {
+   "id": 1,
+   "name": "meadow",
+   "tile": 2.5,
+   "mean": [
+    96,
+    109,
+    48
+   ],
+   "source": {
+    "source": "acg",
+    "asset": "Grass004",
+    "license": "CC0"
+   }
+  },
+  {
+   "id": 2,
+   "name": "forest_floor",
+   "tile": 2,
+   "mean": [
+    145,
+    135,
+    93
+   ],
+   "source": {
+    "source": "ph",
+    "asset": "forrest_ground_01",
+    "license": "CC0"
+   }
+  },
+  {
+   "id": 3,
+   "name": "conifer_floor",
+   "tile": 1.5,
+   "mean": [
+    130,
+    95,
+    59
+   ],
+   "source": {
+    "source": "ph",
+    "asset": "forest_leaves_04",
+    "license": "CC0"
+   }
+  },
+  {
+   "id": 4,
+   "name": "dirt",
+   "tile": 2,
+   "mean": [
+    136,
+    107,
+    82
+   ],
+   "source": {
+    "source": "ph",
+    "asset": "rocky_trail_02",
+    "license": "CC0"
+   }
+  },
+  {
+   "id": 5,
+   "name": "gravel",
+   "tile": 1.5,
+   "mean": [
+    114,
+    106,
+    95
+   ],
+   "source": {
+    "source": "ph",
+    "asset": "rock_ground",
+    "license": "CC0"
+   }
+  },
+  {
+   "id": 6,
+   "name": "asphalt",
+   "tile": 3,
+   "mean": [
+    90,
+    90,
+    85
+   ],
+   "source": {
+    "source": "ph",
+    "asset": "asphalt_02",
+    "license": "CC0"
+   }
+  },
+  {
+   "id": 7,
+   "name": "concrete",
+   "tile": 2,
+   "mean": [
+    120,
+    110,
+    91
+   ],
+   "source": {
+    "source": "ph",
+    "asset": "concrete_floor_02",
+    "license": "CC0"
+   }
+  },
+  {
+   "id": 8,
+   "name": "river_cobbles",
+   "tile": 2.9,
+   "mean": [
+    121,
+    108,
+    91
+   ],
+   "source": {
+    "source": "ph",
+    "asset": "river_small_rocks",
+    "license": "CC0"
+   }
+  },
+  {
+   "id": 9,
+   "name": "cutbank",
+   "tile": 4,
+   "mean": [
+    132,
+    121,
+    105
+   ],
+   "source": {
+    "source": "ph",
+    "asset": "dry_ground_01",
+    "license": "CC0"
+   }
+  },
+  {
+   "id": 10,
+   "name": "mud",
+   "tile": 1.3,
+   "mean": [
+    83,
+    74,
+    59
+   ],
+   "source": {
+    "source": "ph",
+    "asset": "brown_mud_03",
+    "license": "CC0"
+   }
+  },
+  {
+   "id": 11,
+   "name": "moss",
+   "tile": 2,
+   "mean": [
+    131,
+    130,
+    94
+   ],
+   "source": {
+    "source": "acg",
+    "asset": "Moss001",
+    "license": "CC0"
+   }
+  },
+  {
+   "id": 12,
+   "name": "ballast",
+   "tile": 2,
+   "mean": [
+    79,
+    79,
+    76
+   ],
+   "source": {
+    "source": "ph",
+    "asset": "gravel_stones",
+    "license": "CC0"
+   }
+  },
+  {
+   "id": 13,
+   "name": "stubble",
+   "tile": 2,
+   "mean": [
+    172,
+    147,
+    121
+   ],
+   "source": {
+    "source": "ph",
+    "asset": "withered_grass",
+    "license": "CC0"
+   }
+  },
+  {
+   "id": 14,
+   "name": "snow",
+   "tile": 2.5,
+   "mean": [
+    223,
+    239,
+    252
+   ],
+   "source": {
+    "source": "acg",
+    "asset": "Snow010A",
+    "license": "CC0"
+   }
+  },
+  {
+   "id": 15,
+   "name": "sand",
+   "tile": 2.5,
+   "mean": [
+    146,
+    111,
+    76
+   ],
+   "source": {
+    "source": "ph",
+    "asset": "gravelly_sand",
+    "license": "CC0"
+   }
+  }
+ ]
+}

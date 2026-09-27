@@ -9,6 +9,9 @@ import { TerrainIndex, type TerrainIndexJson } from '../world/terrain/TerrainInd
 import { createTerrainMaterials, type ImageryInfo } from '../world/terrain/TerrainMaterial';
 import { TerrainStore } from '../world/terrain/TerrainStore';
 import { readParams, type Params } from './params';
+import { loadKtx2Array } from '../engine/textures/TextureArrays';
+import { ChunkManager } from '../world/ChunkManager';
+import { buildingUniforms, createFacadeMaterial, createRoofMaterial, createTrimMaterial } from '../world/buildings/BuildingMaterials';
 
 const WORLD = './world';
 
@@ -42,6 +45,8 @@ export class App {
   private terrain!: Terrain;
   private store!: TerrainStore;
   private controller!: FlyController;
+  private chunks!: ChunkManager;
+  private chunksComplete = false;
   private readonly sun = new THREE.DirectionalLight(0xffffff, 1);
   private time = 0;
   private readyFrames = 0;
@@ -77,12 +82,40 @@ export class App {
     ]);
     const [near, root] = await Promise.all([loadTexture(`${WORLD}/imagery/near.jpg`), loadTexture(`${WORLD}/imagery/root.jpg`)]);
     const index = new TerrainIndex(indexJson);
-    this.store = new TerrainStore(index, `${WORLD}/terrain`, 256);
+    this.store = new TerrainStore(index, `${WORLD}/terrain`, 256, `${WORLD}/material`);
+    const groundIndex = (await fetch('./assets/terrain/index.json').then((r) => r.json())) as {
+      layers: { id: number; tile: number; mean: number[] }[];
+    };
+    const ids = groundIndex.layers.map((l) => String(l.id).padStart(2, '0'));
+    const [gA, gN] = await Promise.all([
+      loadKtx2Array(this.renderer, ids.map((id) => `./assets/terrain/albedo_${id}.ktx2`), true),
+      loadKtx2Array(this.renderer, ids.map((id) => `./assets/terrain/normal_${id}.ktx2`), false),
+    ]);
+    const srgbToLin = (c: number) => { const v = c / 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    const layers = {
+      albedo: gA,
+      normal: gN,
+      tiles: groundIndex.layers.map((l) => l.tile),
+      means: groundIndex.layers.map((l) => new THREE.Vector3(srgbToLin(l.mean[0]), srgbToLin(l.mean[1]), srgbToLin(l.mean[2]))),
+    };
     const uniforms: Record<string, THREE.IUniform> = {};
-    const mats = createTerrainMaterials(uniforms, near, root, imgJson.near, imgJson.root);
+    const mats = createTerrainMaterials(uniforms, near, root, imgJson.near, imgJson.root, layers, this.store.matAtlas);
     this.terrain = new Terrain(index, this.store, mats.material, mats.depth);
     Object.assign(uniforms, this.terrain.uniforms);
     this.scene.add(this.terrain.mesh);
+
+    const chunkIndex = await fetch(`${WORLD}/chunks/index.json`).then((r) => r.json());
+    this.chunks = new ChunkManager(chunkIndex, `${WORLD}/chunks`, {
+      facade: createFacadeMaterial(),
+      roof: createRoofMaterial(),
+      trim: createTrimMaterial(),
+    });
+    this.scene.add(this.chunks.root);
+    const chunkR = Number(new URLSearchParams(location.search).get('chunkR') ?? 0);
+    if (chunkR > 0) {
+      this.chunks.loadRadius = chunkR;
+      this.chunks.unloadRadius = chunkR + 400;
+    }
 
     this.atmosphere = new Atmosphere();
     this.post = new Post(this.renderer, this.atmosphere, { msaa: p.headless ? 0 : 4, fxaa: p.headless });
@@ -128,6 +161,7 @@ export class App {
       terrain: this.terrain.stats,
       cam: this.camera.position.toArray().map((v) => Math.round(v * 10) / 10),
       level: this.store.levelAt(this.camera.position.x, this.camera.position.z),
+      chunks: this.chunks.stats,
     };
   }
 
@@ -188,9 +222,13 @@ export class App {
     this.sun.target.updateMatrixWorld();
 
     this.terrain.update(this.camera);
+    this.chunksComplete = this.chunks.update(this.camera.position);
+    buildingUniforms.uTime.value = this.time;
+    buildingUniforms.uNight.value = this.sky.night;
+    buildingUniforms.uInterior.value = 0.08 + 0.35 * THREE.MathUtils.clamp(this.sky.sunDir.y * 3, 0, 1);
     this.post.render(this.scene, this.camera, dt, this.time);
 
-    if (this.terrain.complete && this.placed) this.readyFrames++;
+    if (this.terrain.complete && this.placed && this.chunksComplete) this.readyFrames++;
     else this.readyFrames = 0;
     if (this.readyFrames > 8 && window.__cw) window.__cw.ready = true;
     this.ui.dataset.frame = String(this.frameCount);
