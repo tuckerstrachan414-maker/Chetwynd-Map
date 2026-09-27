@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { atmosphereCommon, skyViewLookup } from '../../engine/sky/atmosphereGlsl';
+import { cloudGlsl, cloudSkyGlsl, worldLightUniforms } from '../../engine/WorldLight';
 
 /** Water kinds written by pipeline/water.py (meta.x). */
 export const WATER_KIND = { river: 0, pond: 1, lagoon: 2, creek: 3, ditch: 4 } as const;
@@ -48,6 +49,13 @@ export function createWaterUniforms(): Record<string, THREE.IUniform> {
     uNearBox: { value: new THREE.Vector4(-9000, -9500, 9000, 8500) },
     uSSR: { value: 1 },
     uDebug: { value: 0 },
+    uRain: { value: 0 },
+    uTransmittance: { value: null },
+    uCloudCover: worldLightUniforms.uCloudCover,
+    uCloudOffset: worldLightUniforms.uCloudOffset,
+    uCloudShadowK: worldLightUniforms.uCloudShadowK,
+    uCloudSunDir: worldLightUniforms.uCloudSunDir,
+    uCloudGlow: worldLightUniforms.uCloudGlow,
   };
 }
 
@@ -112,6 +120,10 @@ uniform vec4 uNearBox;
 uniform float uFar;
 uniform float uSSR;
 uniform float uDebug;
+uniform float uRain;
+uniform sampler2D uTransmittance;
+uniform vec3 uCloudGlow;
+${cloudGlsl}
 varying vec3 vWPos;
 varying vec2 vFlow;
 varying vec3 vTint;
@@ -131,10 +143,35 @@ float vnoise(vec2 p) {
   return mix(mix(hash12(i), hash12(i + vec2(1, 0)), u.x), mix(hash12(i + vec2(0, 1)), hash12(i + vec2(1, 1)), u.x), u.y);
 }
 
-vec3 skyLut(vec3 dir) {
+vec3 cwSkyLut(vec3 dir) {
   vec3 col = texture2D(tSkySun, skyViewUv(dir, uSunDir, uViewAltKm)).rgb * uSunE;
   col += texture2D(tSkyMoon, skyViewUv(dir, uMoonDir, uViewAltKm)).rgb * uMoonE;
   return col;
+}
+${cloudSkyGlsl}
+
+// Raindrop rings: expanding capillary rings from drops landing in jittered cells (two layers).
+vec2 rainSlope(vec2 p, float t) {
+  vec2 g = vec2(0.0);
+  for (int l = 0; l < 2; l++) {
+    float sc = l == 0 ? 2.6 : 3.7;
+    vec2 q = p * sc + float(l) * 17.31;
+    vec2 cell = floor(q);
+    for (int j = -1; j <= 1; j++) {
+      for (int i = -1; i <= 1; i++) {
+        vec2 c = cell + vec2(float(i), float(j));
+        float h = hash12(c);
+        vec2 ctr = c + 0.5 + 0.7 * (vec2(hash12(c + 3.1), hash12(c + 7.7)) - 0.5);
+        float ph = fract(t * (0.8 + 0.5 * h) + h * 13.0);
+        vec2 d = q - ctr;
+        float r = length(d) + 1e-4;
+        float x = r - ph * 1.3;
+        float env = exp(-x * x * 40.0) * (1.0 - ph) * (1.0 - ph);
+        g += d / r * cos(x * 30.0) * env;
+      }
+    }
+  }
+  return g;
 }
 
 bool isSky(float d) { return uReversed > 0.5 ? d <= 0.0 : d >= 1.0; }
@@ -238,15 +275,19 @@ void main() {
   // Gusts sweep across ponds as slowly moving patches.
   float gust = smoothstep(0.35, 0.8, vnoise(p * 0.03 + wv * uTime * 0.05));
   s *= still ? mix(0.35, 1.3, gust) : 1.0;
+  if (uRain > 0.01 && dist < 45.0) s += rainSlope(p, uTime) * 0.09 * uRain * (1.0 - smoothstep(20.0, 45.0, dist));
   s /= 1.0 + dist * 0.004;
   vec3 N = normalize(vec3(-s.x, 1.0, -s.y));
   if (!gl_FrontFacing) N = -N;
 
   // ---- lighting environment ----
-  float shadow = sunShadow();
+  float shadow = sunShadow() * cloudShadow(vWPos);
   float NdotLs = max(dot(N, uLightDir), 0.0);
   vec3 Esun = uLightColor * max(uLightDir.y, 0.0) * shadow;
-  vec3 Esky = (skyLut(normalize(vec3(0.3, 1.0, 0.1))) + skyLut(normalize(vec3(-0.3, 0.8, -0.2)))) * 0.5 * 3.14159;
+  vec3 sunT = texture2D(uTransmittance, lutUv(vec3(0.0, Rg + uViewAltKm, 0.0), uSunDir)).rgb;
+  vec3 d1 = normalize(vec3(0.3, 1.0, 0.1));
+  vec3 d2 = normalize(vec3(-0.3, 0.8, -0.2));
+  vec3 Esky = (cwSky(d1, cwSkyLut(d1), sunT) + cwSky(d2, cwSkyLut(d2), sunT)) * 0.5 * 3.14159;
 
   // ---- refraction and absorption ----
   vec2 suv = gl_FragCoord.xy / uResolution;
@@ -288,7 +329,10 @@ void main() {
   vec3 R = reflect(-V, N);
   R.y = max(R.y, 0.01);
   R = normalize(R);
-  vec3 refl = skyLut(R);
+  vec3 refl = cwSky(R, cwSkyLut(R), sunT);
+  // Clouds mirrored in the surface.
+  vec4 clR = cwCloudLayer(vWPos, R, 1e9, sunT);
+  refl = mix(refl, clR.rgb, clR.a);
   if (uSSR > 0.5 && dist < 900.0 && gl_FrontFacing) {
     vec3 pV = (viewMatrix * vec4(vWPos, 1.0)).xyz;
     vec3 rV = normalize((viewMatrix * vec4(R, 0.0)).xyz);

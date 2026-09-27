@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { AP_MAX_KM, type Atmosphere } from './sky/Atmosphere';
+import { worldLightUniforms } from './WorldLight';
+import { dofFrag } from './dofGlsl';
 import { adaptFrag, compositeFrag, downFrag, finalFrag, fxaaFrag, lumFrag, quadVert, upFrag } from './postGlsl';
 
 export interface PostSettings {
@@ -13,6 +15,8 @@ export interface PostSettings {
   grain: number;
   saturation: number;
   contrast: number;
+  /** FPV lens barrel distortion strength (0 = off). */
+  barrel: number;
 }
 
 function hdrTarget(w: number, h: number, opts: Partial<THREE.RenderTargetOptions> = {}): THREE.WebGLRenderTarget {
@@ -34,6 +38,10 @@ const BLOOM_LEVELS = 6;
 export class Post {
   readonly sceneRT: THREE.WebGLRenderTarget;
   private readonly compRT: THREE.WebGLRenderTarget;
+  private readonly dofRT: THREE.WebGLRenderTarget;
+  private readonly mDof: THREE.ShaderMaterial;
+  /** Photo-mode depth of field (thin lens, metres); null = off. */
+  dof: { focal: number; aperture: number; focus: number } | null = null;
   private readonly ldrRT: THREE.WebGLRenderTarget;
   private readonly lumRT: THREE.WebGLRenderTarget;
   private adaptA = hdrTarget(1, 1, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
@@ -68,13 +76,14 @@ export class Post {
   ) {
     this.settings = {
       msaa: 4, bloom: 0.035, fxaa: false, exposureComp: 0, manualExposure: 0, vignette: 0.22, grain: 0.004,
-      saturation: 1.05, contrast: 1.02, ...settings,
+      saturation: 1.05, contrast: 1.02, barrel: 0, ...settings,
     };
     const reversed = renderer.capabilities.reversedDepthBuffer && renderer.state.buffers.depth.getReversed();
     const depthTexture = new THREE.DepthTexture(1, 1, THREE.FloatType);
     depthTexture.format = THREE.DepthFormat;
     this.sceneRT = hdrTarget(1, 1, { depthBuffer: true, samples: this.settings.msaa, depthTexture });
     this.compRT = hdrTarget(1, 1);
+    this.dofRT = hdrTarget(1, 1);
     this.ldrRT = new THREE.WebGLRenderTarget(1, 1, { depthBuffer: false });
     this.lumRT = hdrTarget(128, 64, { generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter });
     for (let k = 0; k < BLOOM_LEVELS; k++) {
@@ -105,8 +114,25 @@ export class Post {
       uTime: { value: 0 },
       uStarRot: { value: new THREE.Matrix3() },
       uUnder: { value: 0 },
+      uCloudCover: worldLightUniforms.uCloudCover,
+      uCloudOffset: worldLightUniforms.uCloudOffset,
+      uCloudShadowK: worldLightUniforms.uCloudShadowK,
+      uCloudSunDir: worldLightUniforms.uCloudSunDir,
+      uCloudGlow: worldLightUniforms.uCloudGlow,
       uUnderSigma: { value: new THREE.Vector3(0.62, 0.3, 0.38) },
       uUnderDeep: { value: new THREE.Vector3() },
+    });
+    this.mDof = mk(dofFrag, {
+      tColor: { value: this.compRT.texture },
+      tDepth: { value: depthTexture },
+      uInvProj: { value: new THREE.Matrix4() },
+      uReversed: { value: reversed ? 1 : 0 },
+      uTexel: { value: new THREE.Vector2() },
+      uFocal: { value: 0.035 },
+      uAperture: { value: 5.6 },
+      uFocus: { value: 10 },
+      uPxPerM: { value: 1 },
+      uMaxR: { value: 16 },
     });
     this.mLum = mk(lumFrag, { tColor: { value: this.compRT.texture } });
     this.mAdapt = mk(adaptFrag, {
@@ -136,6 +162,9 @@ export class Post {
       uContrast: { value: this.settings.contrast },
       uLift: { value: new THREE.Vector3(0, 0, 0) },
       uGain: { value: new THREE.Vector3(1, 1, 1) },
+      uNight: { value: 0 },
+      uBarrel: { value: 0 },
+      uAspect: { value: 1 },
       toneMappingExposure: { value: 1 },
     });
     this.mFxaa = mk(fxaaFrag, { tColor: { value: this.ldrRT.texture }, uTexel: { value: new THREE.Vector2() } });
@@ -174,6 +203,7 @@ export class Post {
     this.refrColor.setSize(w, h);
     this.refrDepth.setSize(w, h);
     this.compRT.setSize(w, h);
+    this.dofRT.setSize(w, h);
     this.ldrRT.setSize(w, h);
     let bw = Math.max(1, w >> 1);
     let bh = Math.max(1, h >> 1);
@@ -184,6 +214,7 @@ export class Post {
       bh = Math.max(1, bh >> 1);
     }
     (this.mFxaa.uniforms.uTexel.value as THREE.Vector2).set(1 / w, 1 / h);
+    this.final.uniforms.uAspect.value = w / Math.max(h, 1);
   }
 
   private pass(mat: THREE.Material, target: THREE.WebGLRenderTarget | null): void {
@@ -222,6 +253,22 @@ export class Post {
     cu.uViewAltKm.value = Math.max(camera.position.y / 1000, 0.01);
     cu.uTime.value = time;
     this.pass(this.composite, this.compRT);
+    let comp = this.compRT;
+    if (this.dof) {
+      // Circle of confusion on a 24 mm tall sensor, in pixels; blur radius capped for cost.
+      const du = this.mDof.uniforms;
+      (du.uInvProj.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
+      (du.uTexel.value as THREE.Vector2).set(1 / this.width, 1 / this.height);
+      du.uFocal.value = this.dof.focal;
+      du.uAperture.value = this.dof.aperture;
+      du.uFocus.value = Math.max(this.dof.focus, this.dof.focal * 1.5);
+      du.uPxPerM.value = this.height / 0.024;
+      du.uMaxR.value = Math.max(4, Math.round((this.height / 1080) * 22));
+      this.pass(this.mDof, this.dofRT);
+      comp = this.dofRT;
+    }
+    this.mLum.uniforms.tColor.value = comp.texture;
+    this.final.uniforms.tColor.value = comp.texture;
 
     // Auto exposure.
     this.pass(this.mLum, this.lumRT);
@@ -235,7 +282,7 @@ export class Post {
 
     // Bloom chain.
     const du = this.mDown.uniforms;
-    let src: THREE.Texture = this.compRT.texture;
+    let src: THREE.Texture = comp.texture;
     let sw = this.width;
     let sh = this.height;
     for (let k = 0; k < BLOOM_LEVELS; k++) {
@@ -273,6 +320,7 @@ export class Post {
     fu.uGrain.value = this.settings.grain;
     fu.uSaturation.value = this.settings.saturation;
     fu.uContrast.value = this.settings.contrast;
+    fu.uBarrel.value = this.settings.barrel;
     if (this.settings.fxaa) {
       this.pass(this.final, this.ldrRT);
       this.pass(this.mFxaa, null);

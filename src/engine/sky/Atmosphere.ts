@@ -39,6 +39,7 @@ export class Atmosphere {
   private readonly mSky: THREE.ShaderMaterial;
   private readonly mAerial: THREE.ShaderMaterial;
   private staticDone = false;
+  private lutHaze = -1;
   private readonly invViewProj = new THREE.Matrix4();
 
   constructor() {
@@ -100,10 +101,12 @@ export class Atmosphere {
     const prevTarget = renderer.getRenderTarget();
     const prevAutoClear = renderer.autoClear;
     renderer.autoClear = false;
-    if (!this.staticDone) {
+    // Transmittance and multiple scattering depend only on the haze (weather); redo them when it moves.
+    if (!this.staticDone || Math.abs(this.haze.value - this.lutHaze) > 0.04 * this.lutHaze) {
       this.draw(renderer, this.mTrans, this.transmittance);
       this.draw(renderer, this.mMulti, this.multiScatter);
       this.staticDone = true;
+      this.lutHaze = this.haze.value;
     }
     const altKm = Math.max(camera.position.y / 1000, 0.01);
     this.mSky.uniforms.uViewAltKm.value = altKm;

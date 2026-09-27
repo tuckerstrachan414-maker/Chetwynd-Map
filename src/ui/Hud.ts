@@ -18,7 +18,8 @@ export class Hud {
       <div class="hud-tip hidden"></div>
       <div class="hud-help">
         <b>Walk</b> WASD / arrows · Shift run · Space jump · Mouse look<br/>
-        <b>F</b> fly · <b>V</b> drive · <b>G</b> FPV drone · <b>P</b> photo · <b>E</b> editor · <b>T</b> time · <b>Y</b> season · <b>H</b> hide help
+        <b>F</b> fly · <b>V</b> drive (C camera, Space handbrake, R reset) · <b>G</b> FPV drone (K radio setup, M acro/angle, R reset)<br/>
+        <b>P</b> photo · <b>E</b> editor · <b>N</b> go to a landmark · <b>T</b> time (Shift+T back) · <b>Y</b> season · <b>U</b> weather · <b>H</b> hide help
       </div>
       <div class="hud-start"><div><h1>Chetwynd, BC</h1><p>Click to explore</p><small>Built from 2024–25 LidarBC LiDAR, OpenStreetMap, Overture Maps and Sentinel-2.</small></div></div>
     `;

@@ -103,6 +103,16 @@ export class Physics {
     this.meshes.delete(key);
   }
 
+  /** Thin static walls (fences): centre, half length, half height, heading atan2(dz, dx). */
+  addWalls(walls: { x: number; y: number; z: number; hl: number; hh: number; ang: number }[]): void {
+    for (const b of walls) {
+      const desc = RAPIER.ColliderDesc.cuboid(b.hl, b.hh, 0.06)
+        .setTranslation(b.x, b.y, b.z)
+        .setRotation({ x: 0, y: Math.sin(-b.ang / 2), z: 0, w: Math.cos(-b.ang / 2) });
+      this.world.createCollider(desc);
+    }
+  }
+
   /** Replace trunk colliders with trees near (x, z). trees: [x, y, z, h, ...] stride 8. */
   updateTrunks(trees: Float32Array[], x: number, z: number, radius = 45): void {
     if (Math.hypot(x - this.lastTrunkPos.x, z - this.lastTrunkPos.z) < 8) return;

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { worldLit } from '../../engine/WorldLight';
 import { gunzip } from '../codec';
 import { buildTrack, tieGeometry } from './RailBuilder';
 
@@ -204,7 +205,7 @@ export class RoadManager {
       };
       m.customProgramCacheKey = () => 'cw-steel';
     }
-    return m;
+    return worldLit(m);
   }
 
   private structureMaterial(kind: number, color: THREE.Color, roughness: number): THREE.MeshStandardMaterial {
@@ -228,7 +229,7 @@ export class RoadManager {
         .replace('#include <map_fragment>', structFrag);
     };
     m.customProgramCacheKey = () => `cw-struct-${kind}`;
-    return m;
+    return worldLit(m);
   }
 
   private surfaceMaterial(s: number): THREE.MeshStandardMaterial {
@@ -259,7 +260,8 @@ export class RoadManager {
         `);
     };
     m.customProgramCacheKey = () => `cw-road-${s}`;
-    return m;
+    m.userData.wlNoWet = true; // the road shader darkens and glosses itself
+    return worldLit(m);
   }
 
   private paintMaterial(color: THREE.Color): THREE.MeshStandardMaterial {
@@ -288,7 +290,8 @@ export class RoadManager {
         `);
     };
     m.customProgramCacheKey = () => `cw-paint-${color.getHexString()}`;
-    return m;
+    m.userData.wlNoWet = true;
+    return worldLit(m);
   }
 
   get busy(): boolean {

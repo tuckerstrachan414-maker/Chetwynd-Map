@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { worldLit } from '../../engine/WorldLight';
 
 /** Global vegetation uniforms (wind, time, season). */
 export const vegUniforms = {
@@ -110,6 +111,8 @@ export function createFoliageMaterial(o: FoliageOptions): THREE.MeshStandardMate
         // Snow load on the upper side of conifer sprays.
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.85, 0.88, 0.92), uSnow * (1.0 - uDeciduous) * smoothstep(0.2, 0.8, normalize(vNormal).y) * 0.8);
         foliageTranslucency = mix(vec3(0.9, 1.0, 0.6), vec3(1.0, 0.8, 0.4), step(0.5, uSeason) * step(uSeason, 1.5));
+        // Needles are thick and waxy: little light passes through compared with thin leaves.
+        foliageTranslucency *= mix(0.25, 1.0, uDeciduous);
       `)
       .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
         // Volumetric crown normals: do not flip for back faces.
@@ -125,7 +128,7 @@ export function createFoliageMaterial(o: FoliageOptions): THREE.MeshStandardMate
     shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', '');
   };
   m.customProgramCacheKey = () => `cw-foliage-${o.deciduous ? 1 : 0}-${o.H}`;
-  return m;
+  return worldLit(m);
 }
 
 export function createBarkMaterial(map: THREE.Texture, normalMap: THREE.Texture, H: number): THREE.MeshStandardMaterial {
@@ -149,7 +152,7 @@ export function createBarkMaterial(map: THREE.Texture, normalMap: THREE.Texture,
       .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = 0.9;');
   };
   m.customProgramCacheKey = () => `cw-bark-${H}`;
-  return m;
+  return worldLit(m);
 }
 
 /** Depth material for foliage shadows: alpha-tested cards with wind. */

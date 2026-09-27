@@ -8,6 +8,8 @@ export class FlyController {
   private readonly keys = new Set<string>();
   private readonly euler = new THREE.Euler(0, 0, 0, 'YXZ');
   enabled = true;
+  /** Look by dragging with the right mouse button instead of pointer lock (editor, photo mode). */
+  dragLook = false;
 
   constructor(
     private readonly camera: THREE.PerspectiveCamera,
@@ -17,10 +19,11 @@ export class FlyController {
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     window.addEventListener('blur', () => this.keys.clear());
     dom.addEventListener('click', () => {
-      if (this.enabled && document.pointerLockElement !== dom) dom.requestPointerLock?.();
+      if (this.enabled && !this.dragLook && document.pointerLockElement !== dom) dom.requestPointerLock?.();
     });
     document.addEventListener('mousemove', (e) => {
-      if (!this.enabled || document.pointerLockElement !== dom) return;
+      if (!this.enabled) return;
+      if (this.dragLook ? (e.buttons & 2) === 0 : document.pointerLockElement !== dom) return;
       this.yaw -= e.movementX * 0.0022;
       this.pitch = THREE.MathUtils.clamp(this.pitch - e.movementY * 0.0022, -1.55, 1.55);
     });
@@ -38,8 +41,8 @@ export class FlyController {
     if (this.keys.has('KeyS')) v.z += 1;
     if (this.keys.has('KeyA')) v.x -= 1;
     if (this.keys.has('KeyD')) v.x += 1;
-    if (this.keys.has('KeyE') || this.keys.has('Space')) v.y += 1;
-    if (this.keys.has('KeyQ') || this.keys.has('ControlLeft')) v.y -= 1;
+    if ((!this.dragLook && this.keys.has('KeyE')) || this.keys.has('Space')) v.y += 1;
+    if ((!this.dragLook && this.keys.has('KeyQ')) || this.keys.has('ControlLeft')) v.y -= 1;
     if (v.lengthSq() === 0) return;
     const boost = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') ? 5 : 1;
     v.normalize().multiplyScalar(this.speed * boost * dt);

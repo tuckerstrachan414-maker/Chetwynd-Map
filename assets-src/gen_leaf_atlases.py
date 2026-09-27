@@ -11,6 +11,11 @@ normal) go to pipeline/cache/treetex/out for build_tree_textures.mjs.
   birch   paper birch: ovate-triangular, doubly serrate
   willow  willow shrubs: narrow lanceolate, entire
   shrub   saskatoon / rose / dogwood mix: small oval, toothed near the tip
+
+Conifer sprays (python gen_leaf_atlases.py conifers):
+  spruce  white spruce: flat, pinnately branched sprays densely clothed in short 4-sided needles,
+          blue-green with paler new growth at the shoot tips
+  pine    lodgepole pine: stout twigs ending in bottlebrush tufts of paired, twisted needles
 """
 import json
 import math
@@ -253,6 +258,164 @@ def twig(species, seed):
     return cv
 
 
+def needle(cv, p0, p1, w, color, depth, lift=0.0):
+    """Anti-aliased needle from p0 to p1 (canvas px), width w, cylindrical normal, tip taper."""
+    x0, x1 = int(max(0, min(p0[0], p1[0]) - w - 1)), int(min(cv.n, max(p0[0], p1[0]) + w + 2))
+    y0, y1 = int(max(0, min(p0[1], p1[1]) - w - 1)), int(min(cv.n, max(p0[1], p1[1]) + w + 2))
+    if x1 <= x0 or y1 <= y0:
+        return
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    px, py = xx + 0.5 - p0[0], yy + 0.5 - p0[1]
+    dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+    L2 = dx * dx + dy * dy + 1e-9
+    t = np.clip((px * dx + py * dy) / L2, 0, 1)
+    ex, ey = px - t * dx, py - t * dy
+    d = np.hypot(ex, ey)
+    hw = w * 0.5 * (1.0 - 0.75 * t ** 3)
+    m = (d < hw) & (depth > cv.depth[y0:y1, x0:x1])
+    if not m.any():
+        return
+    L = math.sqrt(L2)
+    nx, ny = -dy / L, dx / L
+    across = (ex * nx + ey * ny) / np.maximum(hw, 1e-3)
+    nz = np.sqrt(np.clip(1 - across * across, 0, 1))
+    shade = (0.7 + 0.3 * nz) * (0.85 + 0.3 * t) + lift
+    c = np.asarray(color)[None, None] * shade[..., None]
+    sub = (slice(y0, y1), slice(x0, x1))
+    cv.col[sub][m] = np.clip(c[m], 0, 1)
+    cv.alpha[sub][m] = 1.0
+    cv.nrm[sub][m] = np.stack([across * nx * 0.8, across * ny * 0.8, nz + 0.3], -1)[m]
+    cv.depth[sub][m] = depth
+
+
+def path(start, ang, length, steps, rng, wander=0.06, pull=None):
+    pts = [np.asarray(start, float)]
+    p = pts[0].copy()
+    for _ in range(steps):
+        ang += rng.uniform(-wander, wander)
+        if pull is not None:
+            ang += (pull - ang) * 0.05
+        p = p + np.array([math.cos(ang), math.sin(ang)]) * length / steps
+        pts.append(p.copy())
+    return np.array(pts)
+
+
+def along(pts, t):
+    seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    cum = np.concatenate([[0], np.cumsum(seg)])
+    s = t * cum[-1]
+    j = int(np.clip(np.searchsorted(cum, s) - 1, 0, len(pts) - 2))
+    f = (s - cum[j]) / max(seg[j], 1e-6)
+    pos = pts[j] * (1 - f) + pts[j + 1] * f
+    tang = pts[j + 1] - pts[j]
+    return pos, math.atan2(tang[1], tang[0])
+
+
+def spruce_spray(seed):
+    """White spruce: a flat pinnate spray, every twig clothed in short stiff needles."""
+    rng = np.random.default_rng(seed)
+    n = CELL * SS
+    cv = Canvas(n)
+    twig_col = np.array([0.36, 0.25, 0.15])
+    old = srgb((44, 66, 56))
+    new = srgb((62, 90, 64))
+    main = path([n * rng.uniform(0.47, 0.53), n * 0.995], -math.pi / 2 + rng.uniform(-0.12, 0.12), n * 0.93, 18, rng, 0.05)
+    twigs = [(main, 0)]
+    n_side = int(rng.integers(11, 15))
+    for k in range(n_side):
+        t = 0.08 + 0.84 * (k + rng.uniform(0.2, 0.8)) / n_side
+        at, ta = along(main, t)
+        side = 1 if k % 2 else -1
+        a = ta + side * rng.uniform(0.75, 1.05)
+        ln = n * (0.5 * (1 - t) + 0.08) * rng.uniform(0.85, 1.15)
+        tw = path(at, a, ln, 8, rng, 0.07, pull=ta)
+        twigs.append((tw, 1))
+        # Third-order twiglets on the longer side shoots.
+        if ln > n * 0.16:
+            nj = int(rng.integers(3, 6))
+            for j in range(nj):
+                t2 = 0.15 + 0.7 * (j + rng.uniform(0.2, 0.8)) / nj
+                at2, ta2 = along(tw, t2)
+                a2 = ta2 + (1 if j % 2 else -1) * rng.uniform(0.7, 1.0)
+                twigs.append((path(at2, a2, ln * 0.35 * (1 - t2 * 0.5), 5, rng, 0.08, pull=ta2), 2))
+    for tw, order in twigs:
+        cv.stroke(tw, n * (0.009, 0.006, 0.004)[order], twig_col, depth=-4.0 + order * 0.01, rng=rng)
+    # Needles: all around each twig; seen from above they fan out at 35-80 degrees either side,
+    # some pointing at the viewer (short, foreshortened). New growth at the outer 30 % is paler.
+    for tw, order in twigs:
+        seg = np.linalg.norm(np.diff(tw, axis=0), axis=1).sum()
+        count = int(seg * 1.6)
+        for i in range(count):
+            t = rng.uniform(0.02, 1.0)
+            at, ta = along(tw, t)
+            side = 1 if rng.random() < 0.5 else -1
+            fore = rng.uniform(0.25, 1.0)
+            a = ta + side * rng.uniform(0.6, 1.4)
+            L = n * rng.uniform(0.026, 0.036) * fore
+            tip = at + np.array([math.cos(a), math.sin(a)]) * L
+            fresh = np.clip((t - 0.8) / 0.2, 0, 1) * (0.5 if order == 0 else 0.8)
+            col = old * rng.uniform(0.8, 1.15) * (1 - fresh) + new * fresh * rng.uniform(0.9, 1.1)
+            needle(cv, at, tip, n * 0.0042, col, depth=rng.uniform(-1, 1) + (0.5 if fore < 0.5 else 0), lift=0.04 * fore)
+    return cv
+
+
+def pine_spray(seed):
+    """Lodgepole pine: twig ending in dense tufts of paired 3-6 cm needles."""
+    rng = np.random.default_rng(seed)
+    n = CELL * SS
+    cv = Canvas(n)
+    twig_col = np.array([0.42, 0.3, 0.2])
+    base = srgb((70, 98, 46))
+    main = path([n * rng.uniform(0.45, 0.55), n * 0.995], -math.pi / 2 + rng.uniform(-0.15, 0.15), n * 0.62, 10, rng, 0.08)
+    shoots = [main]
+    nsh = int(rng.integers(2, 4))
+    for k in range(nsh):
+        at, ta = along(main, 0.3 + 0.4 * (k + rng.uniform(0.2, 0.8)) / nsh)
+        a = ta + (1 if k % 2 else -1) * rng.uniform(0.55, 0.85)
+        shoots.append(path(at, a, n * rng.uniform(0.3, 0.4), 6, rng, 0.08))
+    for k, sh in enumerate(shoots):
+        cv.stroke(sh, n * (0.02 if k == 0 else 0.014), twig_col, depth=-4.0 + k * 0.01, rng=rng)
+    for sh in shoots:
+        seg = np.linalg.norm(np.diff(sh, axis=0), axis=1).sum()
+        count = int(seg * 1.4)
+        for i in range(count):
+            # Needles cluster towards the shoot end (the last few years of growth).
+            t = 1 - rng.uniform(0, 1) ** 1.8 * 0.85
+            at, ta = along(sh, t)
+            spread = rng.uniform(-1.0, 1.0) * (0.5 + 0.5 * t)
+            a = ta + spread * 0.95 + rng.normal(0, 0.12)
+            fore = rng.uniform(0.35, 1.0)
+            L = n * rng.uniform(0.09, 0.14) * fore
+            mid = at + np.array([math.cos(a), math.sin(a)]) * L * 0.5 + rng.normal(0, n * 0.004, 2)
+            tip = at + np.array([math.cos(a + rng.normal(0, 0.1)), math.sin(a + rng.normal(0, 0.1))]) * L
+            col = base * rng.uniform(0.75, 1.2)
+            d = rng.uniform(-1, 1)
+            needle(cv, at, mid, n * 0.0048, col, d, 0.05 * fore)
+            needle(cv, mid, tip, n * 0.0042, col, d, 0.05 * fore)
+    return cv
+
+
+def build_conifer(name, gen):
+    size = CELL * 2
+    col = np.zeros((size, size, 3))
+    alpha = np.zeros((size, size))
+    nrm = np.zeros((size, size, 3))
+    cells = []
+    for k in range(4):
+        cv = gen(sum(map(ord, name)) * 131 + k * 97)
+        a = downsample(cv.alpha, SS)
+        c = downsample(cv.col * cv.alpha[..., None], SS) / np.maximum(a[..., None], 1e-6)
+        nn = downsample(cv.nrm, SS)
+        nn /= np.maximum(np.linalg.norm(nn, axis=-1, keepdims=True), 1e-6)
+        oy, ox = (k // 2) * CELL, (k % 2) * CELL
+        col[oy:oy + CELL, ox:ox + CELL] = c
+        alpha[oy:oy + CELL, ox:ox + CELL] = a
+        nrm[oy:oy + CELL, ox:ox + CELL] = nn
+        cells.append([ox / size, oy / size, CELL / size, CELL / size])
+        print(name, k, "coverage", round(float(a.mean()), 3), flush=True)
+    return finish(name, col, alpha, nrm, cells)
+
+
 def downsample(a, f):
     h, w = a.shape[:2]
     return a.reshape(h // f, f, w // f, f, *a.shape[2:]).mean((1, 3))
@@ -275,6 +438,10 @@ def build(species):
         alpha[oy:oy + CELL, ox:ox + CELL] = a
         nrm[oy:oy + CELL, ox:ox + CELL] = nn
         cells.append([ox / size, oy / size, CELL / size, CELL / size])
+    return finish(species, col, alpha, nrm, cells)
+
+
+def finish(species, col, alpha, nrm, cells):
     # Bleed leaf colour into transparent texels so mipmaps do not darken the edges.
     from scipy import ndimage
     solid = alpha > 0.02
@@ -296,12 +463,17 @@ def build(species):
 
 
 def main():
+    import sys
     OUT.mkdir(parents=True, exist_ok=True)
     cj = OUT / "cells.json"
     cells = json.loads(cj.read_text()) if cj.exists() else {}
-    for sp in SPECIES:
-        cells[sp] = build(sp)
-        print(sp, "done", flush=True)
+    if "conifers" in sys.argv[1:]:
+        cells["spruce"] = build_conifer("spruce", spruce_spray)
+        cells["pine"] = build_conifer("pine", pine_spray)
+    else:
+        for sp in SPECIES:
+            cells[sp] = build(sp)
+            print(sp, "done", flush=True)
     cells.pop("leafy", None)
     cj.write_text(json.dumps(cells, indent=1))
 

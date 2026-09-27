@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { worldLit } from '../../engine/WorldLight';
 import type { TerrainStore } from '../terrain/TerrainStore';
 import { vegUniforms } from './TreeMaterials';
 
@@ -228,7 +229,7 @@ export class Grass {
         `);
     };
     m.customProgramCacheKey = () => `cw-grass-${cell}`;
-    const mesh = new THREE.Mesh(geo, m);
+    const mesh = new THREE.Mesh(geo, worldLit(m));
     mesh.frustumCulled = false;
     mesh.receiveShadow = true;
     mesh.castShadow = false;

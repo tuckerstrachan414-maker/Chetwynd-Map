@@ -14,6 +14,8 @@ export interface Params {
   date: [number, number, number];
   hour: number;
   season?: string;
+  weather?: string;
+  mode?: string;
   quality?: string;
   debug: boolean;
   spawn?: string;
@@ -41,6 +43,8 @@ export function readParams(search = location.search): Params {
     date: date && date.length === 3 ? [date[0], date[1], date[2]] : [2025, 7, 15],
     hour: Number(q.get('t') ?? 14),
     season: q.get('season') ?? undefined,
+    weather: q.get('weather') ?? undefined,
+    mode: q.get('mode') ?? undefined,
     quality: q.get('q') ?? undefined,
     debug: q.has('debug'),
     spawn: q.get('spawn') ?? undefined,

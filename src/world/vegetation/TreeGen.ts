@@ -221,7 +221,8 @@ function conifer(arch: Archetype, seed: number, p: Params, lod: 0 | 1): { bark: 
         const f = u * n - seg;
         const pb = add(mul(pts[seg], 1 - f), mul(pts[seg + 1], f));
         const along = norm(sub(pts[seg + 1], pts[seg]));
-        const size = (pine ? 0.55 : 0.42) + (pine ? 0.25 : 0.2) * r();
+        // Lower, longer spruce branches carry broad secondary sprays: the layered skirt look.
+        const size = ((pine ? 0.55 : 0.42) + (pine ? 0.25 : 0.2) * r()) * (pine ? 1 : 1 + 0.28 * Math.min(L, 3) * (1 - u));
         for (let c = 0; c < (pine ? 3 : 2); c++) {
           // Rotate the spray around the branch axis; flatten into the branch plane for spruce.
           const roll = (pine ? (c / 3) * Math.PI * 2 : (c === 0 ? -0.5 : 0.5)) + (r() - 0.5) * 0.9;

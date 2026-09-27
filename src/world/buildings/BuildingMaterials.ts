@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { worldLit } from '../../engine/WorldLight';
 
 /** Shared uniforms driving time-of-day behaviour of building materials. */
 export const buildingUniforms = {
@@ -381,7 +382,7 @@ export function createFacadeMaterial(): THREE.MeshStandardMaterial {
       .replace('#include <emissivemap_fragment>', 'totalEmissiveRadiance = fc.emissive;');
   };
   m.customProgramCacheKey = () => 'cw-facade-v1';
-  return m;
+  return worldLit(m);
 }
 
 export function createRoofMaterial(): THREE.MeshStandardMaterial {
@@ -405,7 +406,7 @@ export function createRoofMaterial(): THREE.MeshStandardMaterial {
       .replace('#include <normal_fragment_maps>', tangentNormal());
   };
   m.customProgramCacheKey = () => 'cw-roof-v1';
-  return m;
+  return worldLit(m);
 }
 
 export function createTrimMaterial(): THREE.MeshStandardMaterial {
@@ -420,5 +421,5 @@ export function createTrimMaterial(): THREE.MeshStandardMaterial {
       .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = vF0.a > 0.5 ? 0.6 : 0.0;');
   };
   m.customProgramCacheKey = () => 'cw-trim-v1';
-  return m;
+  return worldLit(m);
 }

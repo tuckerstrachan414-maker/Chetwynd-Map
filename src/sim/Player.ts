@@ -35,6 +35,13 @@ export class Player {
 
   constructor(private readonly physics: Physics) {}
 
+  /** Take the walker out of the physics world (while driving or flying). */
+  despawn(): void {
+    if (!this.body) return;
+    this.physics.world.removeRigidBody(this.body);
+    this.body = undefined as unknown as RAPIER.RigidBody;
+  }
+
   spawn(x: number, groundY: number, z: number): void {
     const w = this.physics.world;
     if (this.body) w.removeRigidBody(this.body);

@@ -1,4 +1,7 @@
 import * as THREE from 'three';
+import { worldLit } from '../../engine/WorldLight';
+import type { Pickable } from '../../ui/Editor';
+import { refOf, type EditKind, type Overrides } from '../Overrides';
 import {
   benchModel, binModel, hydrantModel, lampModel, playgroundModel, poleModel, POLE_ATTACH, signalModel, stopModel,
   streetNameModel, TOWER_ATTACH, towerModel, type MatKey, type Part,
@@ -56,12 +59,8 @@ function stopTexture(): THREE.CanvasTexture {
   g.font = 'bold 74px Arial, Helvetica, sans-serif';
   g.textAlign = 'center';
   g.textBaseline = 'middle';
-  // Texture v runs up; draw mirrored vertically so the word reads upright.
-  g.save();
-  g.translate(128, 128);
-  g.scale(1, -1);
-  g.fillText('STOP', 0, 4);
-  g.restore();
+  // CanvasTexture uploads with flipY, so canvas-up is texture-up: draw the word upright.
+  g.fillText('STOP', 128, 132);
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
   t.anisotropy = 4;
@@ -113,6 +112,10 @@ export class PropManager {
   private readonly mats = new Map<MatKey, THREE.Material>();
   private lastPos = new THREE.Vector3(1e9, 0, 1e9);
   private data!: PropsJson;
+  private overrides: Overrides | null = null;
+  private readonly userIds = new WeakMap<Rec, string>();
+  /** Editor overrides of original records by ref: the moved record, or null when deleted. */
+  private moved = new Map<string, Rec | null>();
   private wires!: THREE.Mesh;
   stats = { drawn: 0 };
 
@@ -175,6 +178,7 @@ export class PropManager {
       }
       default: m = std(0x888888, 0.6);
     }
+    worldLit(m);
     this.mats.set(k, m);
     return m;
   }
@@ -183,18 +187,66 @@ export class PropManager {
     const res = await fetch(`${this.baseUrl}/props.json`);
     if (!res.ok) return;
     this.data = (await res.json()) as PropsJson;
+    this.setupStreetNames(this.data.streetname ?? []);
+    this.build();
+  }
+
+  /** Use the editor's overrides: rebuilds the editable kinds and the wires. */
+  applyOverrides(ov: Overrides): void {
+    this.overrides = ov;
+    if (this.data) this.build();
+  }
+
+  /** Records of a kind after the editor's deletes, moves and additions. */
+  private recsOf(kind: EditKind, recs: Rec[]): Rec[] {
+    if (!this.overrides) return recs;
+    const { removed, added } = this.overrides.forKind(kind);
+    const out: Rec[] = [];
+    for (const r of recs) {
+      const ref = refOf(kind, r[0], r[2]);
+      if (removed.has(ref)) this.moved.set(ref, null);
+      else out.push(r);
+    }
+    for (const a of added) {
+      if (a.x === undefined || a.z === undefined) continue;
+      const rec: Rec = [a.x, a.y ?? 0, a.z, a.rot ?? 0, 'user', a.variant];
+      this.userIds.set(rec, a.id ?? '');
+      if (a.ref) this.moved.set(a.ref, rec);
+      out.push(rec);
+    }
+    return out;
+  }
+
+  private build(): void {
+    // Drop the previous build (street-name posts are not editable and stay).
+    for (const [key, kind] of this.kinds) {
+      if (key.startsWith('streetname')) continue;
+      for (const m of kind.meshes) {
+        this.root.remove(m);
+        m.geometry.dispose();
+        m.dispose();
+      }
+      this.kinds.delete(key);
+    }
+    if (this.wires) {
+      this.root.remove(this.wires);
+      this.wires.geometry.dispose();
+    }
+    this.moved.clear();
     const d = this.data;
-    const add = (name: string, recs: Rec[], models: (v: number) => Part[], variants: number[], radius: number) => {
+    const add = (name: EditKind, recs: Rec[], models: (v: number) => Part[], variants: number[], radius: number) => {
+      const all = this.recsOf(name, recs);
       for (const v of variants) {
-        const sel = recs.filter((r) => (variants.length > 1 ? Number(r[5] ?? 0) === v : true));
-        this.kinds.set(`${name}:${v}`, { recs: sel, meshes: this.instanced(models(v), sel.length), radius });
+        const sel = all.filter((r) => (variants.length > 1 ? Number(r[5] ?? 0) === v : true));
+        this.kinds.set(`${name}:${v}`, { recs: sel, meshes: this.instanced(models(v), sel.length + 64), radius });
       }
     };
     add('lamp', d.lamp ?? [], lampModel, [0, 1], 700);
-    // Poles: every fifth carries a transformer can; split into two model variants.
-    const poles = d.pole ?? [];
-    this.kinds.set('pole:0', { recs: poles.filter((_, i) => i % 5 !== 0), meshes: this.instanced(poleModel(1), poles.length), radius: 900 });
-    this.kinds.set('pole:1', { recs: poles.filter((_, i) => i % 5 === 0), meshes: this.instanced(poleModel(0), poles.length), radius: 900 });
+    // Poles: about one in five carries a transformer can (chosen by position, stable under edits).
+    const poles = this.recsOf('pole', d.pole ?? []);
+    const can = (r: Rec) => Math.abs(Math.floor(r[0] * 7.31 + r[2] * 3.17)) % 5 === 0;
+    this.kinds.set('pole:0', { recs: poles.filter((r) => !can(r)), meshes: this.instanced(poleModel(1), poles.length + 64), radius: 900 });
+    this.kinds.set('pole:1', { recs: poles.filter(can), meshes: this.instanced(poleModel(0), poles.length + 64), radius: 900 });
     add('tower', d.tower ?? [], towerModel, [0], 4000);
     add('hydrant', d.hydrant ?? [], hydrantModel, [0], 250);
     add('stop', d.stop ?? [], stopModel, [0], 300);
@@ -202,8 +254,51 @@ export class PropManager {
     add('bench', d.bench ?? [], benchModel, [0], 250);
     add('bin', d.bin ?? [], binModel, [0], 200);
     add('playground', d.playground ?? [], playgroundModel, [0], 500);
-    this.setupStreetNames(d.streetname ?? []);
     this.buildWires();
+    this.lastPos.set(1e9, 0, 1e9);
+  }
+
+  /** Editable street furniture near (x, z) for the editor. */
+  pickables(x: number, z: number, radius: number): Pickable[] {
+    const size: Partial<Record<EditKind, [number, number]>> = {
+      lamp: [9, 0.7], pole: [11, 0.7], hydrant: [0.9, 0.6], stop: [2.6, 0.6], bench: [1, 1.1], bin: [1, 0.6],
+    };
+    const out: Pickable[] = [];
+    const r2 = radius * radius;
+    for (const [key, kind] of this.kinds) {
+      const name = key.split(':')[0] as EditKind;
+      const sz = size[name];
+      if (!sz) continue;
+      for (const r of kind.recs) {
+        const dx = r[0] - x, dz = r[2] - z;
+        if (dx * dx + dz * dz > r2) continue;
+        const id = this.userIds.get(r);
+        out.push({
+          kind: name, ref: id ? `#${id}` : refOf(name, r[0], r[2]), x: r[0], y: r[1], z: r[2], rot: r[3], h: sz[0], r: sz[1],
+          src: r[4] === 'user' ? 'user' : r[4] === 'osm' ? 'mapped' : 'inferred',
+          variant: name === 'lamp' ? Number(r[5] ?? 0) : undefined,
+        });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Street-light heads for the night light field: [x, z, headHeight, intensity, r, g, b, headElevation].
+   * The head sits at the end of the arm (see lampModel), rotated with the record's heading.
+   */
+  lampLights(): number[][] {
+    const lamps = [...(this.kinds.get('lamp:0')?.recs ?? []), ...(this.kinds.get('lamp:1')?.recs ?? [])];
+    return lamps.map((r) => {
+      const arterial = Number(r[5] ?? 0) === 1;
+      const h = arterial ? 10 : 8.5;
+      const reach = (arterial ? 3.2 : 1.8) + 0.3;
+      // Irradiance straight below the head ~0.2: about twenty times (boosted) full moonlight, the
+      // ratio a lit street has to moonlit ground.
+      const I = 0.2 * h * h * (arterial ? 1.25 : 1);
+      const col = arterial ? [1, 0.72, 0.45] : [1, 0.8, 0.6];
+      return [r[0] + Math.sin(r[3]) * reach, r[2] + Math.cos(r[3]) * reach, h, I, ...col, r[1] + h + 0.05];
+    });
   }
 
   private instanced(parts: Part[], cap: number): THREE.InstancedMesh[] {
@@ -247,6 +342,7 @@ export class PropManager {
             vMapUv = vec2(uv.x, 1.0 - (aRow + 1.0 - uv.y) / ${rows.toFixed(1)});`);
       };
       mat.customProgramCacheKey = () => 'cw-streetname';
+      worldLit(mat);
       const m = new THREE.InstancedMesh(g, mat, Math.max(1, recs.length));
       m.count = 0;
       m.castShadow = true;
@@ -318,14 +414,18 @@ export class PropManager {
         }
       }
     };
-    lines(this.data.wires ?? [], this.data.pole ?? [], POLE_ATTACH, 0.018, 0.012);
+    const resolve = (kind: EditKind, recs: Rec[]) => recs.map((r) => {
+      const m = this.moved.get(refOf(kind, r[0], r[2]));
+      return m === undefined ? r : m;
+    }) as Rec[];
+    lines(this.data.wires ?? [], resolve('pole', this.data.pole ?? []), POLE_ATTACH, 0.018, 0.012);
     lines(this.data.hv ?? [], this.data.tower ?? [], TOWER_ATTACH, 0.02, 0.02);
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.setIndex(idx);
     g.computeVertexNormals();
     g.computeBoundingSphere();
-    const mat = new THREE.MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.5, metalness: 0.6 });
+    const mat = worldLit(new THREE.MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.5, metalness: 0.6 }));
     this.wires = new THREE.Mesh(g, mat);
     this.wires.castShadow = false;
     this.wires.receiveShadow = false;

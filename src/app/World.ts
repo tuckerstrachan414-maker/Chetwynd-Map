@@ -3,16 +3,21 @@ import type { Post } from '../engine/Post';
 import { Atmosphere } from '../engine/sky/Atmosphere';
 import { SkyEnvironment } from '../engine/sky/SkyEnvironment';
 import { loadKtx2Array } from '../engine/textures/TextureArrays';
+import { LightField, worldLightUniforms } from '../engine/WorldLight';
 import { ChunkManager } from '../world/ChunkManager';
 import { buildingUniforms, createFacadeMaterial, createRoofMaterial, createTrimMaterial } from '../world/buildings/BuildingMaterials';
 import { Carvings } from '../world/props/Carvings';
+import { Fences } from '../world/props/Fences';
 import { PropManager, propUniforms } from '../world/props/PropManager';
 import { RoadManager, roadUniforms } from '../world/roads/RoadManager';
 import { SkyState, SUN_E } from '../world/SkyState';
+import { Overrides } from '../world/Overrides';
 import { Terrain } from '../world/terrain/Terrain';
+import { Weather } from '../world/Weather';
 import { TerrainIndex, type TerrainIndexJson } from '../world/terrain/TerrainIndex';
 import { createTerrainMaterials, type ImageryInfo } from '../world/terrain/TerrainMaterial';
 import { TerrainStore } from '../world/terrain/TerrainStore';
+import { FallingLeaves } from '../world/vegetation/FallingLeaves';
 import { Forest } from '../world/vegetation/Forest';
 import { Grass } from '../world/vegetation/Grass';
 import { TreeLibrary } from '../world/vegetation/TreeLibrary';
@@ -59,12 +64,18 @@ export type Season = (typeof SEASONS)[number];
 export class World {
   readonly sky = new SkyState();
   readonly sun = new THREE.DirectionalLight(0xffffff, 1);
+  readonly weather = new Weather();
+  readonly overrides = new Overrides();
+  readonly leaves = new FallingLeaves();
+  lightField!: LightField;
+  private lastTime = -1;
   store!: TerrainStore;
   terrain!: Terrain;
   chunks!: ChunkManager;
   roads!: RoadManager;
   props!: PropManager;
   carvings!: Carvings;
+  fences!: Fences;
   forest!: Forest;
   grass!: Grass;
   /** Player feet position for grass interaction (null when not walking). */
@@ -126,9 +137,18 @@ export class World {
     this.roads = new RoadManager(`${WORLD}/roads`, gA, gN, layers.tiles, roadIndex.half, roadIndex.size, new Set(roadIndex.chunks));
     this.scene.add(this.roads.root);
 
+    await this.overrides.load(`${WORLD}/overrides.json`);
     this.props = new PropManager(`${WORLD}/props`);
     await this.props.init();
+    this.props.applyOverrides(this.overrides);
     this.scene.add(this.props.root);
+    // Street lights pool light onto everything around them at night.
+    this.lightField = new LightField();
+    this.lightField.setLights(this.props.lampLights());
+    this.scene.add(this.weather.root);
+    this.fences = new Fences(`${WORLD}/props/fences.json`);
+    await this.fences.init();
+    this.scene.add(this.fences.root);
     this.carvings = new Carvings(`${WORLD}/props/carvings.json`);
     await this.carvings.init();
     this.scene.add(this.carvings.root);
@@ -137,7 +157,15 @@ export class World {
     await trees.init();
     const vegIndex = await fetch(`${WORLD}/veg/index.json`).then((r) => r.json());
     this.forest = new Forest(trees, vegIndex, `${WORLD}/veg`);
+    this.forest.applyOverrides(this.overrides);
     this.scene.add(this.forest.root);
+    this.scene.add(this.leaves.mesh);
+    // Editor changes apply live.
+    this.overrides.onChange(() => {
+      this.props.applyOverrides(this.overrides);
+      this.forest.applyOverrides(this.overrides);
+      this.lightField.setLights(this.props.lampLights());
+    });
     this.grass = new Grass(this.store);
     this.scene.add(this.grass.root);
 
@@ -150,6 +178,7 @@ export class World {
     this.water.uniforms.uDebug.value = Number(new URLSearchParams(location.search).get('wdebug') ?? 0);
     this.water.uniforms.tSkySun.value = this.atmosphere.skyViewSun.texture;
     this.water.uniforms.tSkyMoon.value = this.atmosphere.skyViewMoon.texture;
+    this.water.uniforms.uTransmittance.value = this.atmosphere.transmittance.texture;
     this.scene.add(this.water.root);
     // Restores the resolved opaque colour before water is drawn (see Post.render).
     this.waterRestore = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), createRestoreMaterial());
@@ -198,6 +227,16 @@ export class World {
 
   /** Per-frame environment and streaming update. `focus` is where content streams around. */
   update(camera: THREE.PerspectiveCamera, post: Post, time: number): void {
+    const dt = this.lastTime < 0 ? 0 : THREE.MathUtils.clamp(time - this.lastTime, 0, 0.25);
+    this.lastTime = time;
+    // Weather first: it sets the haze the sky is computed with.
+    const wx = this.weather.update(dt, time, camera.position, this.sky.lightDir, this.sky.lightColor, this.season === 'winter');
+    this.atmosphere.haze.value = wx.haze;
+    roadUniforms.uWet.value = wx.wet;
+    worldLightUniforms.uWLWet.value = wx.wet;
+    this.water.uniforms.uRain.value = wx.rain;
+    // Faint sodium/LED sky glow of the town on the cloud base at night.
+    worldLightUniforms.uCloudGlow.value.set(1.0, 0.64, 0.38).multiplyScalar(0.00035 * this.sky.night * wx.cover);
     const altKm = Math.max(camera.position.y / 1000, 0.01);
     this.sky.update(altKm, this.atmosphere.haze.value);
     this.atmosphere.update(this.renderer, camera, this.sky.sunDir, this.sky.moonDir, this.sky.lightDir);
@@ -228,6 +267,17 @@ export class World {
     this.props.update(cam);
     propUniforms.uNight.value = this.sky.night;
     propUniforms.uTime.value = time;
+    // Photocells switch the street lights on at dusk, together with the lens glow.
+    this.lightField.update(this.renderer, cam, THREE.MathUtils.smoothstep(this.sky.night, 0.25, 0.6));
+    post.final.uniforms.uNight.value = this.sky.night;
+    // Autumn leaves drifting down from nearby aspens, poplars and birches.
+    const season = SEASONS.indexOf(this.season);
+    const lu = this.leaves.uniforms;
+    (lu.uSun.value as THREE.Color).copy(this.sky.lightColor).multiplyScalar(Math.max(this.sky.lightDir.y, 0));
+    (lu.uSunDir.value as THREE.Vector3).copy(this.sky.lightDir);
+    (lu.uAmb.value as THREE.Color).copy(this.sky.lightColor).multiplyScalar(0.05 + 0.1 * Math.max(this.sky.lightDir.y, 0));
+    (lu.uWind.value as THREE.Vector2).copy(this.weather.wind);
+    this.leaves.update(cam, time, season === 1 || season === 0, () => this.forest.deciduousNear(cam.x, cam.z, 45, season));
     this.complete.roads = this.roads.update(cam);
     this.complete.water = this.water.update(cam);
     this.updateWater(camera, post, time);
@@ -274,6 +324,23 @@ export class World {
       u.uShadowOn.value = 1;
     }
     u.uShadowMatrix.value = this.sun.shadow.matrix;
+  }
+
+  /** Vehicle low beams from a chassis (+X forward); pass null to switch them off. */
+  setHeadlights(root: THREE.Object3D | null, night: number): void {
+    const u = worldLightUniforms;
+    if (!root) {
+      u.uHeadK.value = 0;
+      return;
+    }
+    root.updateMatrixWorld();
+    const e = root.matrixWorld.elements;
+    const f = new THREE.Vector3(e[0], e[1], e[2]).normalize();
+    const up = new THREE.Vector3(e[4], e[5], e[6]).normalize();
+    const right = new THREE.Vector3(e[8], e[9], e[10]).normalize();
+    u.uHeadPos.value.copy(new THREE.Vector3(2.95, 0.12, 0).applyMatrix4(root.matrixWorld));
+    u.uHeadMat.value.set(f.x, f.y, f.z, up.x, up.y, up.z, right.x, right.y, right.z);
+    u.uHeadK.value = THREE.MathUtils.smoothstep(night, 0.15, 0.55) + (this.weather.kind === 'fog' || this.weather.kind === 'rain' || this.weather.kind === 'snow' ? 0.35 : 0);
   }
 
   stats(): Record<string, unknown> {

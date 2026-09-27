@@ -1,8 +1,11 @@
 import * as THREE from 'three';
+import { worldLit } from '../../engine/WorldLight';
 import { gunzip } from '../codec';
 import { ARCHETYPES, SPECIES, archetypeOf, type Archetype } from './species';
 import { IMP_VIEWS, type ModelEntry, TreeLibrary, VARIANTS } from './TreeLibrary';
 import { vegUniforms } from './TreeMaterials';
+import type { Pickable } from '../../ui/Editor';
+import { refOf, type Overrides } from '../Overrides';
 
 interface VegIndex {
   size: number;
@@ -16,8 +19,23 @@ const STRIDE = 8;
 interface VegChunk {
   trees: Float32Array;
   shrubs: Float32Array;
+  /** As loaded, before the editor's overrides. */
+  rawTrees: Float32Array;
+  rawShrubs: Float32Array;
+  /** Override ids of user-added (or moved) trees/shrubs by record index; '' for originals. */
+  treeIds: string[];
+  shrubIds: string[];
   imp: THREE.Mesh | null;
+  x0: number;
+  z0: number;
+  ymin: number;
 }
+
+const hashSeed = (s: string) => {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return (h >>> 0) % 256;
+};
 
 const impVert = /* glsl */ `
 attribute vec4 iA;
@@ -136,7 +154,7 @@ export class Forest {
         `);
     };
     m.customProgramCacheKey = () => 'cw-impostor';
-    this.impMaterial = m;
+    this.impMaterial = worldLit(m);
     // Near instanced meshes per model entry and LOD.
     for (const e of lib.entries) {
       for (const lod of [0, 1] as const) {
@@ -236,9 +254,44 @@ export class Forest {
       }
       return out;
     };
-    const trees = parse(16, nT);
-    const shrubs = parse(16 + nT * 10, nS);
-    const chunk: VegChunk = { trees, shrubs, imp: null };
+    const rawTrees = parse(16, nT);
+    const rawShrubs = parse(16 + nT * 10, nS);
+    const chunk: VegChunk = { trees: rawTrees, shrubs: rawShrubs, rawTrees, rawShrubs, treeIds: [], shrubIds: [], imp: null, x0, z0, ymin };
+    this.install(key, chunk);
+    this.chunks.set(key, chunk);
+  }
+
+  /** Apply the editor's overrides to a chunk and (re)build its impostor instances. */
+  private install(key: string, chunk: VegChunk): void {
+    const { x0, z0, ymin } = chunk;
+    const s = this.index.size;
+    const apply = (raw: Float32Array, kind: 'tree' | 'shrub'): [Float32Array, string[]] => {
+      if (!this.overrides) return [raw, []];
+      const { removed, added } = this.overrides.forKind(kind);
+      const out: number[] = [];
+      const ids: string[] = [];
+      for (let k = 0; k < raw.length; k += STRIDE) {
+        if (removed.size && removed.has(refOf(kind, raw[k], raw[k + 2]))) continue;
+        for (let q = 0; q < STRIDE; q++) out.push(raw[k + q]);
+        ids.push('');
+      }
+      for (const a of added) {
+        if (a.x === undefined || a.z === undefined || a.x < x0 || a.x >= x0 + s || a.z < z0 || a.z >= z0 + s) continue;
+        const seed = hashSeed(a.id ?? `${a.x},${a.z}`);
+        out.push(a.x, a.y ?? 0, a.z, a.h ?? 10, a.r ?? 2, a.sp ?? 0, seed, a.rot ?? (seed / 255) * Math.PI * 2);
+        ids.push(a.id ?? '');
+      }
+      return [new Float32Array(out), ids];
+    };
+    [chunk.trees, chunk.treeIds] = apply(chunk.rawTrees, 'tree');
+    [chunk.shrubs, chunk.shrubIds] = apply(chunk.rawShrubs, 'shrub');
+    if (chunk.imp) {
+      this.root.remove(chunk.imp);
+      chunk.imp.geometry.dispose();
+      chunk.imp = null;
+    }
+    const trees = chunk.trees;
+    const nT = trees.length / STRIDE;
     if (nT > 0) {
       const g = new THREE.InstancedBufferGeometry();
       g.index = this.quad.index;
@@ -265,7 +318,58 @@ export class Forest {
       this.fillTint(chunk);
       this.root.add(mesh);
     }
-    this.chunks.set(key, chunk);
+  }
+
+  private overrides: Overrides | null = null;
+
+  /** Use the editor's overrides; re-applies them to every loaded chunk (and to chunks loaded later). */
+  applyOverrides(ov: Overrides): void {
+    this.overrides = ov;
+    for (const [key, c] of this.chunks) this.install(key, c);
+    this.lastNear.set(1e9, 0, 0);
+  }
+
+  /** Trees and shrubs near (x, z) for the editor: LiDAR trees are mapped, LiDAR-density shrubs inferred. */
+  pickables(x: number, z: number, radius: number): Pickable[] {
+    const out: Pickable[] = [];
+    const r2 = radius * radius;
+    const s = this.index.size;
+    for (const [key, c] of this.chunks) {
+      const [i, j] = this.available.get(key)!;
+      const cx = -this.index.half + (i + 0.5) * s;
+      const cz = -this.index.half + (j + 0.5) * s;
+      if (Math.hypot(cx - x, cz - z) > radius + 190) continue;
+      for (const [arr, ids, kind] of [[c.trees, c.treeIds, 'tree'], [c.shrubs, c.shrubIds, 'shrub']] as const) {
+        for (let k = 0, n = 0; k < arr.length; k += STRIDE, n++) {
+          const dx = arr[k] - x, dz = arr[k + 2] - z;
+          if (dx * dx + dz * dz > r2) continue;
+          const id = ids[n] ?? '';
+          out.push({
+            kind, ref: id ? `#${id}` : refOf(kind, arr[k], arr[k + 2]), x: arr[k], y: arr[k + 1], z: arr[k + 2], rot: arr[k + 7],
+            h: arr[k + 3], r: Math.max(0.7, arr[k + 4] * 0.6), sp: arr[k + 5], src: id ? 'user' : kind === 'tree' ? 'mapped' : 'inferred',
+          });
+        }
+      }
+    }
+    return out;
+  }
+
+  /** Deciduous trees near (x, z) for falling leaves: [x, y, z, h, crownR, r, g, b, amount]. */
+  deciduousNear(x: number, z: number, radius: number, season: number): number[][] {
+    const out: number[][] = [];
+    const r2 = radius * radius;
+    for (const arr of this.treesNear(x, z, radius)) {
+      for (let k = 0; k < arr.length; k += STRIDE) {
+        const dx = arr[k] - x, dz = arr[k + 2] - z;
+        if (dx * dx + dz * dz > r2) continue;
+        const def = SPECIES[arr[k + 5]];
+        if (!def?.deciduous) continue;
+        const c = season === 1 ? def.autumn : def.summer;
+        // Aspen and poplar shed most; a few leaves fall in late summer too.
+        out.push([arr[k], arr[k + 1], arr[k + 2], arr[k + 3], arr[k + 4], c[0] * 2.2, c[1] * 2.2, c[2] * 2.2, season === 1 ? 1 : 0.05]);
+      }
+    }
+    return out;
   }
 
   /** Tree arrays (stride 8) of chunks near (x, z), for trunk colliders. */

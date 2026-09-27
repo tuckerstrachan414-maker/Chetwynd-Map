@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { worldLit } from '../../engine/WorldLight';
 import { patchTerrainVertex } from './Terrain';
 import { terrainFragmentPars } from './terrainShaders';
 
@@ -229,5 +230,5 @@ export function createTerrainMaterials(
   depth.defines = { TERRAIN_DEPTH: '' };
   depth.onBeforeCompile = (shader) => patchTerrainVertex(shader, uniforms);
   depth.customProgramCacheKey = () => 'cw-terrain-depth';
-  return { material, depth };
+  return { material: worldLit(material), depth };
 }

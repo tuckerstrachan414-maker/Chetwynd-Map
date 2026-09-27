@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { worldLit } from '../../engine/WorldLight';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 /**
@@ -334,7 +335,7 @@ export class Carvings {
           diffuseColor.rgb *= 0.92 + 0.08 * smoothstep(0.1, 0.4, score);`);
     };
     m.customProgramCacheKey = () => 'cw-carving';
-    this.material = m;
+    this.material = worldLit(m);
   }
 
   async init(): Promise<void> {
