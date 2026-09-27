@@ -13,6 +13,8 @@ export interface GroundLayers {
   normal: THREE.Texture;
   tiles: number[];
   means: THREE.Vector3[];
+  /** Per-layer linear albedo gain: calibrates photoscans to local ground albedo. */
+  gains: THREE.Vector3[];
 }
 
 /**
@@ -30,6 +32,7 @@ uniform highp sampler2DArray uGroundA;
 uniform highp sampler2DArray uGroundN;
 uniform float uTile[16];
 uniform vec3 uMean[16];
+uniform vec3 uGain[16];
 uniform float uDetailDist;
 uniform float uSnow;
 
@@ -78,6 +81,7 @@ void gLayer(int id, vec2 wp, float nb, out vec4 A, out vec4 B) {
   // Rotating the second sample rotates its normals too.
   vec2 n2 = (B2.xy * 2.0 - 1.0) * R;
   B.xy = mix(B1.xy, n2 * 0.5 + 0.5, w);
+  A.rgb *= uGain[id];
 }
 
 struct GSurf { vec3 albedo; vec3 nts; float rough; float ao; };
@@ -179,7 +183,8 @@ export function createTerrainMaterials(
     uGroundA: { value: layers.albedo },
     uGroundN: { value: layers.normal },
     uTile: { value: layers.tiles },
-    uMean: { value: layers.means },
+    uMean: { value: layers.means.map((m, i) => m.clone().multiply(layers.gains[i])) },
+    uGain: { value: layers.gains },
     uDetailDist: { value: 700 },
     uSnow: { value: 0 },
   });

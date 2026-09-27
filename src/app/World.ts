@@ -12,6 +12,7 @@ import { TerrainIndex, type TerrainIndexJson } from '../world/terrain/TerrainInd
 import { createTerrainMaterials, type ImageryInfo } from '../world/terrain/TerrainMaterial';
 import { TerrainStore } from '../world/terrain/TerrainStore';
 import { Forest } from '../world/vegetation/Forest';
+import { Grass } from '../world/vegetation/Grass';
 import { TreeLibrary } from '../world/vegetation/TreeLibrary';
 import { vegUniforms } from '../world/vegetation/TreeMaterials';
 import { createRestoreMaterial } from '../world/water/WaterMaterial';
@@ -34,6 +35,21 @@ const srgbToLin = (c: number) => {
   return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
 };
 
+/**
+ * Albedo calibration of the photoscanned ground layers (by material ID) towards measured boreal
+ * values: litter and moss floors are dark (~0.1), the stock scans are bright and orange.
+ */
+const GROUND_GAIN: Record<number, [number, number, number]> = {
+  1: [0.9, 0.9, 0.9], // meadow
+  2: [0.5, 0.53, 0.52], // deciduous forest floor
+  3: [0.48, 0.53, 0.6], // conifer floor
+  4: [0.72, 0.75, 0.82], // dirt
+  9: [0.88, 0.88, 0.9], // cutbank
+  11: [0.6, 0.63, 0.56], // moss
+  13: [0.85, 0.85, 0.88], // stubble
+  15: [0.85, 0.88, 0.95], // sand
+};
+
 export const SEASONS = ['summer', 'autumn', 'winter', 'spring'] as const;
 export type Season = (typeof SEASONS)[number];
 
@@ -46,6 +62,9 @@ export class World {
   chunks!: ChunkManager;
   roads!: RoadManager;
   forest!: Forest;
+  grass!: Grass;
+  /** Player feet position for grass interaction (null when not walking). */
+  playerFeet: THREE.Vector3 | null = null;
   water!: WaterManager;
   private waterRestore!: THREE.Mesh;
   atmosphere!: Atmosphere;
@@ -80,6 +99,7 @@ export class World {
       normal: gN,
       tiles: groundIndex.layers.map((l) => l.tile),
       means: groundIndex.layers.map((l) => new THREE.Vector3(srgbToLin(l.mean[0]), srgbToLin(l.mean[1]), srgbToLin(l.mean[2]))),
+      gains: groundIndex.layers.map((l) => new THREE.Vector3(...(GROUND_GAIN[l.id] ?? [1, 1, 1]))),
     };
     const mats = createTerrainMaterials(this.terrainUniforms, near, root, imgJson.near, imgJson.root, layers, this.store.matAtlas);
     this.terrain = new Terrain(index, this.store, mats.material, mats.depth);
@@ -107,6 +127,8 @@ export class World {
     const vegIndex = await fetch(`${WORLD}/veg/index.json`).then((r) => r.json());
     this.forest = new Forest(trees, vegIndex, `${WORLD}/veg`);
     this.scene.add(this.forest.root);
+    this.grass = new Grass(this.store);
+    this.scene.add(this.grass.root);
 
     this.atmosphere = new Atmosphere();
     this.skyEnv = new SkyEnvironment(this.renderer, this.atmosphere);
@@ -154,6 +176,7 @@ export class World {
     const k = SEASONS.indexOf(s);
     this.forest.setSeason(k);
     this.water.setSeason(k);
+    this.grass.setSeason(k);
     const snow = s === 'winter' ? 1 : 0;
     vegUniforms.uSnow.value = snow;
     buildingUniforms.uSnow.value = snow;
@@ -189,6 +212,7 @@ export class World {
     this.complete.terrain = this.terrain.complete;
     this.complete.chunks = this.chunks.update(cam);
     this.complete.forest = this.forest.update(cam);
+    this.grass.update(cam, this.playerFeet);
     this.complete.roads = this.roads.update(cam);
     this.complete.water = this.water.update(cam);
     this.updateWater(camera, post, time);

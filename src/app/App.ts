@@ -243,6 +243,7 @@ export class App {
       }
     }
     this.camera.updateMatrixWorld();
+    this.world.playerFeet = this.mode === 'walk' && this.spawned ? this.player.position : null;
     this.world.update(this.camera, this.post, this.time);
     this.post.render(this.scene, this.camera, dt, this.time);
     this.input.endFrame();

@@ -34,6 +34,8 @@ export class TerrainStore {
   private readonly pool: WorkerPool<{ url: string; matUrl?: string }, LoadRes>;
   private frame = 0;
   private pendingUploads = 0;
+  /** Bumped whenever a node becomes resident (consumers re-sample heights/materials). */
+  version = 0;
   maxConcurrent = 6;
 
   constructor(
@@ -119,6 +121,7 @@ export class TerrainStore {
     const slot = this.allocSlot();
     if (slot < 0) return;
     const r: Resident = { info, slot, heights: tile.heights, lastUsed: this.frame };
+    this.version++;
     const layerSize = this.n * this.n;
     (this.atlas.image.data as Float32Array).set(tile.heights, slot * layerSize);
     this.atlas.addLayerUpdate(slot);
@@ -184,6 +187,20 @@ export class TerrainStore {
     const c = h[(iz + 1) * n + ix];
     const d = h[(iz + 1) * n + ix + 1];
     return (a * (1 - fx) + b * fx) * (1 - fz) + (c * (1 - fx) + d * fx) * fz;
+  }
+
+  /** Ground material ID (see pipeline/ground.py) at (x, z) from resident level-0 nodes; -1 if unknown. */
+  materialAt(x: number, z: number): number {
+    const idx = this.index;
+    const s = idx.size(0);
+    const r = this.get(0, Math.floor((x + idx.half) / s), Math.floor((z + idx.half) / s));
+    if (!r) return -1;
+    const [x0, z0] = idx.origin(0, r.info.i, r.info.j);
+    const res = idx.nodeRes;
+    const ix = Math.min(Math.max(Math.round(((x - x0) / s) * res), 0), res);
+    const iz = Math.min(Math.max(Math.round(((z - z0) / s) * res), 0), res);
+    const data = this.matAtlas.image.data as Uint8Array;
+    return data[r.slot * this.n * this.n + iz * this.n + ix];
   }
 
   /** Finest resident level covering (x,z), for diagnostics. */
