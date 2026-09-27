@@ -28,7 +28,7 @@ def encode_height(h: np.ndarray, level: int, i: int, j: int, step: float = 0.02)
     planes = 1 if zz.max() < 256 else (2 if zz.max() < 65536 else 3)
     b = zz.astype("<u4").view(np.uint8).reshape(-1, 4)[:, :planes].T.copy()
     header = MAGIC_HEIGHT + struct.pack("<BBHHHff", level, planes, i, j, n, hmin, step)
-    return gzip.compress(header + b.tobytes(), 9), hmin, hmax
+    return gzip.compress(header + b.tobytes(), 9, mtime=0), hmin, hmax
 
 
 def decode_height(data: bytes) -> np.ndarray:

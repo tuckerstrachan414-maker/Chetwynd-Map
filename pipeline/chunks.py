@@ -84,7 +84,7 @@ def main():
     total = 0
     for (i, j), content in chunks.items():
         payload = json.dumps(content, separators=(",", ":")).encode()
-        data = gzip.compress(payload, 9)
+        data = gzip.compress(payload, 9, mtime=0)
         (out / f"{i}_{j}.bin").write_bytes(data)
         total += len(data)
         index.append([i, j, {k: len(v) for k, v in content.items()}])
@@ -152,7 +152,7 @@ def vegetation():
             recs.append(rec.tobytes())
             counts.append(idx.size)
         payload = b"CWV1" + struct.pack("<IIf", counts[0], counts[1], ymin) + b"".join(recs)
-        data = gzip.compress(payload, 6)
+        data = gzip.compress(payload, 6, mtime=0)
         (out / f"{i}_{j}.bin").write_bytes(data)
         total += len(data)
         index.append([i, j, counts[0], counts[1]])

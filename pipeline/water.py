@@ -1190,7 +1190,7 @@ def export(creeks, fields: Fields, open_geom, far_geom, river_rgb):
         if not groups:
             continue
         data = b"CWW1" + struct.pack("<I", len(groups)) + b"".join(groups)
-        z = gzip.compress(data, 9)
+        z = gzip.compress(data, 9, mtime=0)
         (out / f"{i}_{j}.bin").write_bytes(z)
         keys.append(f"{i}_{j}")
         total += len(z)
@@ -1216,7 +1216,7 @@ def export(creeks, fields: Fields, open_geom, far_geom, river_rgb):
         far.add(engine(v[:, 0], v[:, 1], y), np.zeros((len(v), 2)),
                 tint_u8(np.tile(river_rgb, (len(v), 1)), np.zeros(len(v))),
                 np.column_stack([kind, np.zeros((len(v), 3))]), tri)
-    fz = gzip.compress(b"CWW1" + struct.pack("<I", 1) + far.pack(0), 9)
+    fz = gzip.compress(b"CWW1" + struct.pack("<I", 1) + far.pack(0), 9, mtime=0)
     (out / "far.bin").write_bytes(fz)
     (out / "index.json").write_text(json.dumps({"size": NODE_BASE, "half": H, "chunks": keys, "far": "far.bin"}))
     print(f"water: {len(keys)} chunks, {nv} verts, {total / 1e6:.1f} MB; far {far.n} verts {len(fz) / 1e6:.2f} MB", flush=True)

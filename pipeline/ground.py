@@ -162,7 +162,9 @@ def classify():
     # Also dark, low-NDVI surfaces anywhere are likely paved lots/driveways.
     mat[(ndvi < 0.35) & (rel < 0.7) & ~canopy] = ASPHALT
     mat[wetland & ~canopy] = np.where((np.indices(g.shape).sum(0) % 7) < 3, MUD, MOSS)[wetland & ~canopy]
-    mat[shrub] = MOSS
+    # Low vegetation returns are understory in the bush; in town they are mostly parked cars,
+    # trampolines, sheds and hedges standing on lawn or driveway, so keep the ground beneath.
+    mat[shrub & ~urban & ~industrial] = MOSS
     # Canopy: forest floor unless it is an isolated yard tree over lawn.
     lab, n = ndimage.label(canopy)
     sizes = ndimage.sum(canopy, lab, index=np.arange(1, n + 1))
@@ -241,7 +243,7 @@ def export_tiles(g: Grid, mat: np.ndarray):
             cols = np.clip(np.floor(E - left).astype(int), 0, mat.shape[1] - 1)
             rows = np.clip(np.floor(top - N).astype(int), 0, mat.shape[0] - 1)
             tile = mat[np.ix_(rows, cols)]
-            (out / f"{i}_{j}.bin").write_bytes(gzip.compress(tile.astype(np.uint8).tobytes(), 9))
+            (out / f"{i}_{j}.bin").write_bytes(gzip.compress(tile.astype(np.uint8).tobytes(), 9, mtime=0))
             count += 1
     print("material tiles", count)
 

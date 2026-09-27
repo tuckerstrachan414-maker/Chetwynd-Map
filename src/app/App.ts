@@ -177,7 +177,7 @@ export class App {
     const app = this.settingsHost();
     this.settings = new Settings(this.ui, app);
     if (new URLSearchParams(location.search).has('bench')) {
-      this.bench = new Bench(gpuName(this.renderer), this.quality);
+      this.bench = new Bench(gpuName(this.renderer), this.quality, Number(new URLSearchParams(location.search).get('bench')) || 70);
       this.hud.setVisible(false);
       this.hud.setStartVisible(false);
     }

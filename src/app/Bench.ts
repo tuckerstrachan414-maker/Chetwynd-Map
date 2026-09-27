@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 /**
- * ?bench: a fixed 70 s camera route (street level downtown, the Windrem Creek greenbelt, a low pass
+ * ?bench (or ?bench=<seconds> to shorten it): a fixed 70 s camera route (street level downtown, the Windrem Creek greenbelt, a low pass
  * over the Pine River, then a high view of the valley) that records every frame time and reports
  * average FPS and 1 % / 0.1 % lows. Shown on screen and copied to the clipboard.
  */
@@ -28,18 +28,23 @@ export interface BenchResult {
 
 export class Bench {
   private times: number[] = [];
-  private t = -4; // warm-up seconds before recording
+  private t = -2; // warm-up seconds before recording
   done = false;
   result: BenchResult | null = null;
 
-  constructor(private readonly gpu: string, private readonly quality: string) {}
+  /** Route time scale (1 = the full 70 s). */
+  private readonly k: number;
+
+  constructor(private readonly gpu: string, private readonly quality: string, seconds = 70) {
+    this.k = Math.max(0.05, seconds / ROUTE[ROUTE.length - 1].t);
+  }
 
   /** Advance the route; place the camera. `ground` gives terrain height. */
   update(dt: number, camera: THREE.PerspectiveCamera, ground: (x: number, z: number) => number, canvas: HTMLCanvasElement): void {
     if (this.done) return;
     this.t += dt;
     if (this.t > 0) this.times.push(dt * 1000);
-    const tt = Math.max(0, this.t);
+    const tt = Math.max(0, this.t) / this.k;
     let i = 0;
     while (i < ROUTE.length - 2 && ROUTE[i + 1].t < tt) i++;
     const a = ROUTE[i], b = ROUTE[i + 1];
@@ -74,6 +79,7 @@ export class Bench {
       quality: this.quality,
     };
     const r = this.result;
+    if (typeof document === 'undefined') return;
     const text = `Chetwynd 3D benchmark: ${r.avgFps} fps average, ${r.low1} fps 1% low, ${r.low01} fps 0.1% low (${r.frames} frames, ${r.resolution}, ${r.quality} quality, ${r.gpu})`;
     const el = document.createElement('div');
     el.style.cssText = 'position:absolute;left:50%;top:40%;transform:translate(-50%,-50%);background:rgba(10,14,20,.92);color:#eef;padding:18px 22px;border-radius:10px;font:15px/1.5 system-ui,sans-serif;z-index:30;max-width:min(560px,calc(100vw - 32px))';

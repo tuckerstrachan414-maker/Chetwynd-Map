@@ -848,7 +848,7 @@ def main():
                 buf.append(pos.astype(np.float32).tobytes())
                 buf.append(attr.astype(np.float32).tobytes())
                 buf.append(tris.astype(np.uint32).tobytes())
-            data = gzip.compress(b"".join(buf), 6)
+            data = gzip.compress(b"".join(buf), 6, mtime=0)
             (out / f"{i}_{j}.bin").write_bytes(data)
             total += len(data)
             count += 1

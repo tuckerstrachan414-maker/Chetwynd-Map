@@ -85,8 +85,9 @@ export class DynamicResolution {
     this.cooldown -= dt;
     if (this.cooldown > 0) return false;
     let next = this.scale;
-    if (this.avg > this.targetMs * 1.12) next = Math.max(0.55, this.scale - 0.05);
-    else if (this.avg < this.targetMs * 0.78) next = Math.min(this.maxScale, this.scale + 0.05);
+    // Steps are rounded to hundredths so repeated changes land exactly on the limits.
+    if (this.avg > this.targetMs * 1.12) next = Math.max(0.55, Math.round((this.scale - 0.05) * 100) / 100);
+    else if (this.avg < this.targetMs * 0.78) next = Math.min(this.maxScale, Math.round((this.scale + 0.05) * 100) / 100);
     if (next === this.scale) return false;
     this.scale = next;
     this.cooldown = 1.5;
