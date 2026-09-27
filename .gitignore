@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-e2e/
+
+# Local environment (holds your TomTom API key — never commit it)
+.env.local
+.env.*.local
+
+# Test artifacts
+test-results/
+playwright-report/
+blob-report/
+coverage/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.log
