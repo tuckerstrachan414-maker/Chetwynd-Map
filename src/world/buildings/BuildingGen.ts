@@ -144,8 +144,8 @@ function pick<T>(r: () => number, a: T[]): T {
 function styleFor(b: BuildingRec): Style {
   const r = rng(b.seed);
   const cls = b.cls;
-  let wallType = WALL_SIDING;
-  let wall: number | [number, number, number] = pick(r, SIDING);
+  let wallType: number;
+  let wall: number | [number, number, number];
   let win = WIN_HOUSE;
   let floorH = 2.75;
   let overhang = 0.45;
