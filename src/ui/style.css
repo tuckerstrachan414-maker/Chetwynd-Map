@@ -1,0 +1,13 @@
+:root {
+  --ui-bg: rgba(12, 16, 14, 0.72);
+  --ui-fg: #eef2ea;
+  --ui-muted: #a9b3a4;
+  --ui-accent: #e2b04a;
+  --ui-line: rgba(255, 255, 255, 0.14);
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0f0d; color: var(--ui-fg); }
+#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; outline: none; }
+#ui { position: fixed; inset: 0; pointer-events: none; }
+#ui > * { pointer-events: auto; }

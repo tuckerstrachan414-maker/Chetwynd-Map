@@ -1,0 +1,9 @@
+node_modules/
+dist/
+e2e/out/
+pipeline/cache/
+pipeline/.venv/
+__pycache__/
+*.pyc
+.DS_Store
+*.log
