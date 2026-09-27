@@ -21,3 +21,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0f0d; col
 .hud-start h1 { margin: 0 0 6px; font-size: clamp(28px, 6vw, 56px); font-weight: 700; letter-spacing: 0.02em; text-shadow: 0 2px 12px rgba(0,0,0,0.5); }
 .hud-start p { margin: 0 0 10px; font-size: 18px; color: var(--ui-accent); }
 .hud-start small { color: var(--ui-muted); }
+
+.hud-tip { position: absolute; left: 50%; top: calc(50% + 28px); transform: translateX(-50%); max-width: 360px; padding: 8px 12px;
+  border-radius: 6px; background: var(--ui-bg); color: var(--ui-fg, #eee); font-size: 13px; line-height: 1.35; text-align: center; }
+.hud-tip b { display: block; font-size: 15px; margin-bottom: 2px; }

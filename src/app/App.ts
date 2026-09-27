@@ -248,6 +248,17 @@ export class App {
     this.post.render(this.scene, this.camera, dt, this.time);
     this.input.endFrame();
 
+    if (this.frameCount % 6 === 0) {
+      const c = this.world.carvings.lookedAt(this.camera);
+      if (c) {
+        const award = [c.placed && `${c.placed} place`, c.awards].filter(Boolean).join(' · ');
+        this.hud.setTooltip(`#${c.n} ${c.name || 'Chainsaw carving'}`, [
+          [c.carver, c.country].filter(Boolean).join(', ') + (c.year ? ` (${c.year})` : ''),
+          ...(award ? [award] : []),
+          ...(c.location ? [c.location.replace(/\*$/, '')] : []),
+        ]);
+      } else this.hud.setTooltip(null);
+    }
     if (this.frameCount % 15 === 0) {
       const s = this.world.forest.stats;
       this.hud.setStatus(`${Math.round(this.fps)} fps · ${this.world.season} · ${String(Math.floor(this.world.sky.hour)).padStart(2, '0')}:${String(Math.round((this.world.sky.hour % 1) * 60)).padStart(2, '0')} · trees ${s.lod0 + s.lod1}`);

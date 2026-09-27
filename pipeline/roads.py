@@ -517,48 +517,57 @@ def curb_lines(ways, feats, dem, junction_zones):
         if len(near) < 6:
             continue
         for side in (1, -1):
-            edge = g.offset_curve(side * w / 2, quad_segs=4, join_style=2)
-            if edge.is_empty:
-                continue
-            # Ditch test along the edge: ground 2-4 m outside the edge vs the road surface.
-            L = edge.length
-            ds = np.arange(2.0, max(L - 2.0, 2.5), 4.0)
-            if len(ds) < 2:
-                continue
-            P = np.array([edge.interpolate(d).coords[0] for d in ds])
-            T = np.gradient(P, axis=0)
-            T /= np.maximum(np.linalg.norm(T, axis=1, keepdims=True), 1e-9)
-            Nn = np.column_stack([-T[:, 1], T[:, 0]]) * side
-            zin = dem((P - Nn * 0.8)[:, 0], (P - Nn * 0.8)[:, 1])
-            zout = np.median([dem((P + Nn * o)[:, 0], (P + Nn * o)[:, 1]) for o in (2.0, 3.0, 4.0)], axis=0)
-            if np.median(zout - zin) < -0.2:
-                continue
-            # Where the ground beyond the edge is pavement too (lots, aprons, wide shoulders) there
-            # is no curb unless a sidewalk runs there.
-            paved = np.zeros(len(ds), bool)
-            for o in (1.0, 1.8, 2.6):
-                Q = P + Nn * o
-                paved |= np.isin(mat_at(Q[:, 0], Q[:, 1]), PAVED_MATS)
-            sw_edge = edge.intersects(walk_zone)
-            keep = np.ones(len(ds), bool) if sw_edge else ~paved
-            keep = ndimage.binary_opening(keep, np.ones(2)) if keep.sum() < len(keep) else keep
-            lab, nlab = ndimage.label(keep)
-            runs = []
-            for k in range(1, nlab + 1):
-                idx = np.nonzero(lab == k)[0]
-                a0 = max(ds[idx[0]] - 2.0, 0.0)
-                a1 = min(ds[idx[-1]] + 2.0, L)
-                if a1 - a0 >= 6:
-                    runs.append(substring(edge, a0, a1))
-            for run in runs:
-                clipped = run.difference(gaps)
-                parts = [clipped] if isinstance(clipped, LineString) else [x for x in getattr(clipped, "geoms", []) if isinstance(x, LineString)]
-                for part in parts:
-                    if part.length < 4:
-                        continue
-                    out.append((part, side, part.intersects(walk_zone)))
+            off = g.offset_curve(side * w / 2, quad_segs=4, join_style=2)
+            edges = [off] if isinstance(off, LineString) else [x for x in getattr(off, "geoms", []) if isinstance(x, LineString)]
+            for edge in edges:
+                out += curb_runs(edge, side, dem, mat_at, walk_zone, gaps)
     print("curb edges", len(out), "km", round(sum(p.length for p, _, _ in out) / 1000, 1),
           "with sidewalk", round(sum(p.length for p, _, sw in out if sw) / 1000, 1))
+    return out
+
+
+def curb_runs(edge, side, dem, mat_at, walk_zone, gaps):
+    """Curb pieces along one road edge (see curb_lines)."""
+    out = []
+    if edge.is_empty or edge.length < 4:
+        return out
+    # Ditch test along the edge: ground 2-4 m outside the edge vs the road surface.
+    L = edge.length
+    ds = np.arange(2.0, max(L - 2.0, 2.5), 4.0)
+    if len(ds) < 2:
+        return out
+    P = np.array([edge.interpolate(d).coords[0] for d in ds])
+    T = np.gradient(P, axis=0)
+    T /= np.maximum(np.linalg.norm(T, axis=1, keepdims=True), 1e-9)
+    Nn = np.column_stack([-T[:, 1], T[:, 0]]) * side
+    zin = dem((P - Nn * 0.8)[:, 0], (P - Nn * 0.8)[:, 1])
+    zout = np.median([dem((P + Nn * o)[:, 0], (P + Nn * o)[:, 1]) for o in (2.0, 3.0, 4.0)], axis=0)
+    if np.median(zout - zin) < -0.2:
+        return out
+    # Where the ground beyond the edge is pavement too (lots, aprons, wide shoulders) there
+    # is no curb unless a sidewalk runs there.
+    paved = np.zeros(len(ds), bool)
+    for o in (1.0, 1.8, 2.6):
+        Q = P + Nn * o
+        paved |= np.isin(mat_at(Q[:, 0], Q[:, 1]), PAVED_MATS)
+    sw_edge = edge.intersects(walk_zone)
+    keep = np.ones(len(ds), bool) if sw_edge else ~paved
+    keep = ndimage.binary_opening(keep, np.ones(2)) if keep.sum() < len(keep) else keep
+    lab, nlab = ndimage.label(keep)
+    runs = []
+    for k in range(1, nlab + 1):
+        idx = np.nonzero(lab == k)[0]
+        a0 = max(ds[idx[0]] - 2.0, 0.0)
+        a1 = min(ds[idx[-1]] + 2.0, L)
+        if a1 - a0 >= 6:
+            runs.append(substring(edge, a0, a1))
+    for run in runs:
+        clipped = run.difference(gaps)
+        parts = [clipped] if isinstance(clipped, LineString) else [x for x in getattr(clipped, "geoms", []) if isinstance(x, LineString)]
+        for part in parts:
+            if part.length < 4:
+                continue
+            out.append((part, side, part.intersects(walk_zone)))
     return out
 
 

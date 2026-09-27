@@ -5,6 +5,8 @@ import { SkyEnvironment } from '../engine/sky/SkyEnvironment';
 import { loadKtx2Array } from '../engine/textures/TextureArrays';
 import { ChunkManager } from '../world/ChunkManager';
 import { buildingUniforms, createFacadeMaterial, createRoofMaterial, createTrimMaterial } from '../world/buildings/BuildingMaterials';
+import { Carvings } from '../world/props/Carvings';
+import { PropManager, propUniforms } from '../world/props/PropManager';
 import { RoadManager, roadUniforms } from '../world/roads/RoadManager';
 import { SkyState, SUN_E } from '../world/SkyState';
 import { Terrain } from '../world/terrain/Terrain';
@@ -61,6 +63,8 @@ export class World {
   terrain!: Terrain;
   chunks!: ChunkManager;
   roads!: RoadManager;
+  props!: PropManager;
+  carvings!: Carvings;
   forest!: Forest;
   grass!: Grass;
   /** Player feet position for grass interaction (null when not walking). */
@@ -122,6 +126,13 @@ export class World {
     this.roads = new RoadManager(`${WORLD}/roads`, gA, gN, layers.tiles, roadIndex.half, roadIndex.size, new Set(roadIndex.chunks));
     this.scene.add(this.roads.root);
 
+    this.props = new PropManager(`${WORLD}/props`);
+    await this.props.init();
+    this.scene.add(this.props.root);
+    this.carvings = new Carvings(`${WORLD}/props/carvings.json`);
+    await this.carvings.init();
+    this.scene.add(this.carvings.root);
+
     const trees = new TreeLibrary(this.renderer);
     await trees.init();
     const vegIndex = await fetch(`${WORLD}/veg/index.json`).then((r) => r.json());
@@ -177,6 +188,7 @@ export class World {
     this.forest.setSeason(k);
     this.water.setSeason(k);
     this.grass.setSeason(k);
+    this.props.setSeason(k);
     const snow = s === 'winter' ? 1 : 0;
     vegUniforms.uSnow.value = snow;
     buildingUniforms.uSnow.value = snow;
@@ -213,6 +225,9 @@ export class World {
     this.complete.chunks = this.chunks.update(cam);
     this.complete.forest = this.forest.update(cam);
     this.grass.update(cam, this.playerFeet);
+    this.props.update(cam);
+    propUniforms.uNight.value = this.sky.night;
+    propUniforms.uTime.value = time;
     this.complete.roads = this.roads.update(cam);
     this.complete.water = this.water.update(cam);
     this.updateWater(camera, post, time);

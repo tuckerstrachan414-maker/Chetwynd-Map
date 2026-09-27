@@ -5,6 +5,8 @@ export class Hud {
   private readonly status: HTMLDivElement;
   private readonly help: HTMLDivElement;
   private readonly start: HTMLDivElement;
+  private readonly tip: HTMLDivElement;
+  private tipText = '';
 
   constructor(root: HTMLElement) {
     this.el = document.createElement('div');
@@ -13,6 +15,7 @@ export class Hud {
       <div class="hud-cross"></div>
       <div class="hud-mode"></div>
       <div class="hud-status"></div>
+      <div class="hud-tip hidden"></div>
       <div class="hud-help">
         <b>Walk</b> WASD / arrows · Shift run · Space jump · Mouse look<br/>
         <b>F</b> fly · <b>V</b> drive · <b>G</b> FPV drone · <b>P</b> photo · <b>E</b> editor · <b>T</b> time · <b>Y</b> season · <b>H</b> hide help
@@ -24,10 +27,29 @@ export class Hud {
     this.status = this.el.querySelector('.hud-status')!;
     this.help = this.el.querySelector('.hud-help')!;
     this.start = this.el.querySelector('.hud-start')!;
+    this.tip = this.el.querySelector('.hud-tip')!;
   }
 
   setMode(m: string): void {
     this.mode.textContent = m.toUpperCase();
+  }
+
+  /** Info card near the crosshair (e.g. the carving being looked at); null hides it. */
+  setTooltip(title: string | null, lines: string[] = []): void {
+    const key = title === null ? '' : `${title}|${lines.join('|')}`;
+    if (key === this.tipText) return;
+    this.tipText = key;
+    this.tip.classList.toggle('hidden', title === null);
+    if (title === null) return;
+    this.tip.replaceChildren();
+    const h = document.createElement('b');
+    h.textContent = title;
+    this.tip.append(h);
+    for (const l of lines) {
+      const d = document.createElement('div');
+      d.textContent = l;
+      this.tip.append(d);
+    }
   }
 
   setStatus(s: string): void {
