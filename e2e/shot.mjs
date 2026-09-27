@@ -11,9 +11,14 @@ mkdirSync(outDir, { recursive: true });
 const W = Number(process.env.SHOT_W || 1280);
 const H = Number(process.env.SHOT_H || 720);
 
-const server = await createServer({ server: { port: 5199 + Math.floor(Math.random() * 500), host: '127.0.0.1', strictPort: false }, logLevel: 'error' });
-await server.listen();
-const base = server.resolvedUrls.local[0].replace(/\/$/, '');
+// SHOT_BASE=<url> shoots an already running server (e.g. `vite preview` of a production build).
+let server = null;
+let base = process.env.SHOT_BASE?.replace(/\/$/, '');
+if (!base) {
+  server = await createServer({ server: { port: 5199 + Math.floor(Math.random() * 500), host: '127.0.0.1', strictPort: false }, logLevel: 'error' });
+  await server.listen();
+  base = server.resolvedUrls.local[0].replace(/\/$/, '');
+}
 const browser = await chromium.launch({
   executablePath: process.env.CHROME || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
   args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist',
@@ -30,7 +35,7 @@ let idx = 0;
 for (const q of queries.length ? queries : ['']) {
   const url = `${base}/?headless=1&${q}`;
   const t0 = Date.now();
-  await page.goto(url);
+  await page.goto(url, { timeout: 300000 });
   const limit = Number(process.env.SHOT_TIMEOUT || 540000);
   let ok = false;
   while (Date.now() - t0 < limit) {
@@ -58,4 +63,4 @@ for (const q of queries.length ? queries : ['']) {
 }
 if (errors.length) console.log('--- console errors/warnings ---\n' + errors.slice(0, 50).join('\n'));
 await browser.close();
-await server.close();
+await server?.close();

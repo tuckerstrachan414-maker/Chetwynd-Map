@@ -218,15 +218,16 @@ uniform float uViewAltKm;
 uniform vec3 uSunDir;
 uniform mat4 uInvViewProj;
 uniform vec3 uCamWorld;
-uniform float uSlice;
 uniform float uMaxDistKm;
 uniform float uSlices;
-varying vec2 vUv;
 void main() {
-  vec4 clip = vec4(vUv * 2.0 - 1.0, 0.5, 1.0);
+  // The slices lie side by side along x (32 texels each); y is the screen's vertical.
+  float slice = floor(gl_FragCoord.x / 32.0);
+  vec2 uv = vec2(gl_FragCoord.x - slice * 32.0, gl_FragCoord.y) / 32.0;
+  vec4 clip = vec4(uv * 2.0 - 1.0, 0.5, 1.0);
   vec4 wp = uInvViewProj * clip;
   vec3 dir = normalize(wp.xyz / wp.w - uCamWorld);
-  float w = (uSlice + 0.5) / uSlices;
+  float w = (slice + 0.5) / uSlices;
   float dist = uMaxDistKm * w * w;
   vec3 pos = vec3(0.0, Rg + uViewAltKm, 0.0);
   float tG = raySphere(pos, dir, Rg);

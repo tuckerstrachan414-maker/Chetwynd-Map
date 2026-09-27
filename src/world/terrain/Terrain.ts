@@ -69,22 +69,52 @@ export interface TerrainStats {
   resident: number;
 }
 
+/** One selection of terrain patches (the camera's, or the sun shadow map's) and its instance buffers. */
+interface Selection {
+  geo: THREE.InstancedBufferGeometry;
+  node: THREE.InstancedBufferAttribute;
+  a: THREE.InstancedBufferAttribute;
+  b: THREE.InstancedBufferAttribute;
+  frustum: THREE.Frustum;
+  count: number;
+  max: number;
+  /** Ask the store for missing data (the camera's view does; the shadow selection uses what is resident). */
+  request: boolean;
+}
+
+function makeSelection(grid: THREE.InstancedBufferGeometry, max: number, request: boolean): Selection {
+  const geo = new THREE.InstancedBufferGeometry();
+  geo.index = grid.index;
+  geo.setAttribute('position', grid.getAttribute('position'));
+  const attr = () => {
+    const x = new THREE.InstancedBufferAttribute(new Float32Array(max * 4), 4);
+    x.setUsage(THREE.DynamicDrawUsage);
+    return x;
+  };
+  const sel: Selection = { geo, node: attr(), a: attr(), b: attr(), frustum: new THREE.Frustum(), count: 0, max, request };
+  geo.setAttribute('iNode', sel.node);
+  geo.setAttribute('iA', sel.a);
+  geo.setAttribute('iB', sel.b);
+  geo.instanceCount = 0;
+  return sel;
+}
+
 /**
  * CDLOD terrain: selects quadtree nodes each frame and draws all of them in a single
- * instanced draw call, sampling heights from the streamed texture array.
+ * instanced draw call, sampling heights from the streamed texture array. The sun's shadow map gets
+ * its own selection (the patches inside the shadow volume, at the same detail as the camera's view,
+ * so shadows line up) drawn by a proxy mesh that only the shadow pass sees.
  */
 export class Terrain {
   readonly mesh: THREE.Mesh;
+  /** Draws the shadow selection; visible only during the shadow pass (see World). */
+  readonly shadowMesh: THREE.Mesh;
   readonly uniforms: Record<string, THREE.IUniform>;
-  private readonly geo: THREE.InstancedBufferGeometry;
-  private readonly iNode: THREE.InstancedBufferAttribute;
-  private readonly iA: THREE.InstancedBufferAttribute;
-  private readonly iB: THREE.InstancedBufferAttribute;
+  private readonly main: Selection;
+  private readonly shadow: Selection;
   private readonly ranges = new Float32Array(16);
-  private readonly frustum = new THREE.Frustum();
   private readonly box = new THREE.Box3();
   private readonly projView = new THREE.Matrix4();
-  private count = 0;
   private camPos = new THREE.Vector3();
   lodScale = 3.0;
   /** True once every node the current view wants at its ideal level is resident. */
@@ -96,26 +126,25 @@ export class Terrain {
     material: THREE.Material,
     depthMaterial: THREE.Material,
   ) {
-    this.geo = buildGrid();
-    this.iNode = new THREE.InstancedBufferAttribute(new Float32Array(MAX_INSTANCES * 4), 4);
-    this.iA = new THREE.InstancedBufferAttribute(new Float32Array(MAX_INSTANCES * 4), 4);
-    this.iB = new THREE.InstancedBufferAttribute(new Float32Array(MAX_INSTANCES * 4), 4);
-    for (const a of [this.iNode, this.iA, this.iB]) a.setUsage(THREE.DynamicDrawUsage);
-    this.geo.setAttribute('iNode', this.iNode);
-    this.geo.setAttribute('iA', this.iA);
-    this.geo.setAttribute('iB', this.iB);
-    this.geo.instanceCount = 0;
+    const grid = buildGrid();
+    this.main = makeSelection(grid, MAX_INSTANCES, true);
+    this.shadow = makeSelection(grid, 512, false);
     this.uniforms = {
       uHeights: { value: store.atlas },
       uCamPos: { value: this.camPos },
       uLodRange: { value: this.ranges },
     };
-    this.mesh = new THREE.Mesh(this.geo, material);
+    this.mesh = new THREE.Mesh(this.main.geo, material);
     this.mesh.frustumCulled = false;
-    this.mesh.customDepthMaterial = depthMaterial;
     this.mesh.receiveShadow = true;
-    this.mesh.castShadow = true;
+    this.mesh.castShadow = false;
     this.mesh.name = 'terrain';
+    this.shadowMesh = new THREE.Mesh(this.shadow.geo, material);
+    this.shadowMesh.frustumCulled = false;
+    this.shadowMesh.customDepthMaterial = depthMaterial;
+    this.shadowMesh.castShadow = true;
+    this.shadowMesh.visible = false;
+    this.mesh.add(this.shadowMesh);
     this.updateRanges();
   }
 
@@ -127,34 +156,46 @@ export class Terrain {
   }
 
   get stats(): TerrainStats {
-    return { instances: this.count, resident: this.store.residentCount };
+    return { instances: this.main.count, resident: this.store.residentCount };
   }
 
-  update(camera: THREE.Camera): void {
+  /** `shadowFrustum`: the sun shadow camera's frustum for this frame (null: no shadow selection). */
+  update(camera: THREE.Camera, shadowFrustum: THREE.Frustum | null = null): void {
     this.camPos.setFromMatrixPosition(camera.matrixWorld);
     this.projView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-    this.frustum.setFromProjectionMatrix(this.projView, camera.coordinateSystem, (camera as THREE.PerspectiveCamera).reversedDepth);
-    this.count = 0;
+    this.main.frustum.setFromProjectionMatrix(this.projView, camera.coordinateSystem, (camera as THREE.PerspectiveCamera).reversedDepth);
+    this.main.count = 0;
+    this.shadow.count = 0;
     this.complete = true;
     const root = this.index.get(this.index.rootLevel, 0, 0);
     if (!root) return;
     this.store.request(root, -1);
     if (!this.store.get(root.level, 0, 0)) {
       this.complete = false;
-      this.geo.instanceCount = 0;
+      this.main.geo.instanceCount = 0;
+      this.shadow.geo.instanceCount = 0;
       this.store.update();
       return;
     }
-    this.select(this.index.rootLevel, 0, 0);
-    this.geo.instanceCount = this.count;
-    this.iNode.needsUpdate = true;
-    this.iA.needsUpdate = true;
-    this.iB.needsUpdate = true;
-    this.iNode.addUpdateRange(0, this.count * 4);
-    this.iA.addUpdateRange(0, this.count * 4);
-    this.iB.addUpdateRange(0, this.count * 4);
+    this.select(this.main, this.index.rootLevel, 0, 0);
+    this.commit(this.main);
+    if (shadowFrustum) {
+      this.shadow.frustum.copy(shadowFrustum);
+      this.select(this.shadow, this.index.rootLevel, 0, 0);
+    }
+    this.commit(this.shadow);
     this.store.update();
     if (this.store.busy) this.complete = false;
+  }
+
+  private commit(sel: Selection): void {
+    sel.geo.instanceCount = sel.count;
+    if (sel.count === 0) return;
+    for (const a of [sel.node, sel.a, sel.b]) {
+      a.clearUpdateRanges();
+      a.addUpdateRange(0, sel.count * 4);
+      a.needsUpdate = true;
+    }
   }
 
   /** Bounds (hmin, hmax) for a render node from the finest data node covering it. */
@@ -206,7 +247,7 @@ export class Terrain {
     return idx.has(0, Math.floor((x0 + idx.half) / s + 1e-6), Math.floor((z0 + idx.half) / s + 1e-6));
   }
 
-  private select(r: number, i: number, j: number): void {
+  private select(sel: Selection, r: number, i: number, j: number): void {
     const idx = this.index;
     const S = idx.size(r);
     const x0 = -idx.half + i * S;
@@ -214,25 +255,27 @@ export class Terrain {
     const [hmin, hmax] = this.bounds(r, x0, z0);
     this.box.min.set(x0, hmin - 2, z0);
     this.box.max.set(x0 + S, hmax + 2, z0 + S);
-    if (!this.frustum.intersectsBox(this.box)) return;
+    if (!sel.frustum.intersectsBox(this.box)) return;
+    // Detail by distance to the camera in both selections, so the shadow casters match the terrain seen.
     const dist = this.box.distanceToPoint(this.camPos);
     const split = r > MIN_LEVEL && dist < this.ranges[r - 1 - MIN_LEVEL] && this.hasDataBelow(r, x0, z0);
     if (split) {
-      for (let b = 0; b < 2; b++) for (let a = 0; a < 2; a++) this.select(r - 1, i * 2 + a, j * 2 + b);
+      for (let b = 0; b < 2; b++) for (let a = 0; a < 2; a++) this.select(sel, r - 1, i * 2 + a, j * 2 + b);
       return;
     }
-    if (this.count >= MAX_INSTANCES) return;
+    if (sel.count >= sel.max) return;
     const prio = dist / S;
-    const A = this.dataFor(r, x0, z0, r, true, prio);
+    const A = this.dataFor(r, x0, z0, r, sel.request, prio);
     const B = this.dataFor(r, x0, z0, r + 1, false, prio) ?? A;
     if (!A || !B) return;
-    const k = this.count++;
-    this.iNode.array[k * 4] = x0;
-    this.iNode.array[k * 4 + 1] = z0;
-    this.iNode.array[k * 4 + 2] = S;
-    this.iNode.array[k * 4 + 3] = r;
-    this.writeData(this.iA.array as Float32Array, k, A);
-    this.writeData(this.iB.array as Float32Array, k, B);
+    const k = sel.count++;
+    const node = sel.node.array as Float32Array;
+    node[k * 4] = x0;
+    node[k * 4 + 1] = z0;
+    node[k * 4 + 2] = S;
+    node[k * 4 + 3] = r;
+    this.writeData(sel.a.array as Float32Array, k, A);
+    this.writeData(sel.b.array as Float32Array, k, B);
   }
 
   private writeData(arr: Float32Array, k: number, d: Resident): void {

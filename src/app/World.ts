@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import type { Post } from '../engine/Post';
+import type { FrameProfiler } from '../engine/FrameProfiler';
+import { CulledInstances, CullView } from '../world/InstanceCull';
 import { Atmosphere } from '../engine/sky/Atmosphere';
 import { SkyEnvironment } from '../engine/sky/SkyEnvironment';
 import { loadKtx2Array } from '../engine/textures/TextureArrays';
@@ -85,6 +87,10 @@ export class World {
   atmosphere!: Atmosphere;
   skyEnv!: SkyEnvironment;
   private complete = { terrain: false, chunks: false, forest: false, roads: false, water: false };
+  /** The camera's view for per-instance culling (trees, props). */
+  readonly cullView = new CullView();
+  /** Frame profiler (sections per subsystem). */
+  prof: FrameProfiler | null = null;
   season: Season = 'summer';
   private terrainUniforms: Record<string, THREE.IUniform> = {};
 
@@ -201,6 +207,19 @@ export class World {
     this.waterRestore.layers.set(WATER_LAYER);
     this.scene.add(this.waterRestore);
 
+    // The shadow pass draws the near trees whose shadows reach the view, the camera only those in it.
+    const sm = this.renderer.shadowMap as unknown as { render: (...a: unknown[]) => void };
+    const shadowRender = sm.render.bind(this.renderer.shadowMap);
+    sm.render = (...a: unknown[]) => {
+      CulledInstances.beginShadowPass();
+      this.terrain.shadowMesh.visible = true;
+      try {
+        shadowRender(...a);
+      } finally {
+        CulledInstances.endShadowPass();
+        this.terrain.shadowMesh.visible = false;
+      }
+    };
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(4096, 4096);
     const sc = this.sun.shadow.camera;
@@ -210,6 +229,7 @@ export class World {
     sc.bottom = -160;
     sc.near = 1;
     sc.far = 4000;
+    sc.updateProjectionMatrix();
     const reversed = this.renderer.state.buffers.depth.getReversed();
     this.sun.shadow.bias = reversed ? 0.0003 : -0.0003;
     this.sun.shadow.normalBias = 0.6;
@@ -244,6 +264,9 @@ export class World {
     const dt = this.lastTime < 0 ? 0 : THREE.MathUtils.clamp(time - this.lastTime, 0, 0.25);
     this.lastTime = time;
     // Weather first: it sets the haze the sky is computed with.
+    const pr = this.prof;
+    pr?.begin('sky');
+    pr?.gpu('sky');
     const wx = this.weather.update(dt, time, camera.position, this.sky.lightDir, this.sky.lightColor, this.season === 'winter');
     this.atmosphere.haze.value = wx.haze;
     roadUniforms.uWet.value = wx.wet;
@@ -273,16 +296,38 @@ export class World {
     this.sun.position.copy(this.sun.target.position).addScaledVector(this.sky.lightDir, 2000);
     this.sun.target.updateMatrixWorld();
 
-    this.terrain.update(camera);
+    pr?.gpuStop();
+    pr?.end('sky');
+    pr?.begin('terrain');
+    // This frame's sun shadow volume (the renderer recomputes the same matrices for the shadow pass).
+    this.sun.updateMatrixWorld();
+    this.sun.shadow.updateMatrices(this.sun);
+    this.terrain.update(camera, this.sun.shadow.getFrustum());
     this.complete.terrain = this.terrain.complete;
+    pr?.end('terrain');
+    pr?.begin('buildings');
     this.complete.chunks = this.chunks.update(cam);
+    pr?.end('buildings');
+    pr?.begin('trees');
     this.complete.forest = this.forest.update(cam);
-    this.grass.update(cam, this.playerFeet);
+    this.cullView.update(camera, this.sky.lightDir);
+    this.forest.cull(this.cullView);
+    pr?.end('trees');
+    pr?.begin('grass');
+    this.grass.update(camera, this.playerFeet);
+    pr?.end('grass');
+    pr?.begin('props');
     this.props.update(cam);
+    this.props.cull(this.cullView);
+    pr?.end('props');
     propUniforms.uNight.value = this.sky.night;
     propUniforms.uTime.value = time;
     // Photocells switch the street lights on at dusk, together with the lens glow.
+    pr?.begin('lights');
+    pr?.gpu('lights');
     this.lightField.update(this.renderer, cam, THREE.MathUtils.smoothstep(this.sky.night, 0.25, 0.6));
+    pr?.gpuStop();
+    pr?.end('lights');
     post.final.uniforms.uNight.value = this.sky.night;
     // Autumn leaves drifting down from nearby aspens, poplars and birches.
     const season = SEASONS.indexOf(this.season);
@@ -291,10 +336,16 @@ export class World {
     (lu.uSunDir.value as THREE.Vector3).copy(this.sky.lightDir);
     (lu.uAmb.value as THREE.Color).copy(this.sky.lightColor).multiplyScalar(0.05 + 0.1 * Math.max(this.sky.lightDir.y, 0));
     (lu.uWind.value as THREE.Vector2).copy(this.weather.wind);
+    pr?.begin('leaves');
     this.leaves.update(cam, time, season === 1 || season === 0, () => this.forest.deciduousNear(cam.x, cam.z, 45, season));
+    pr?.end('leaves');
+    pr?.begin('roads');
     this.complete.roads = this.roads.update(cam);
+    pr?.end('roads');
+    pr?.begin('water');
     this.complete.water = this.water.update(cam);
     this.updateWater(camera, post, time);
+    pr?.end('water');
     vegUniforms.uTime.value = time;
     buildingUniforms.uTime.value = time;
     buildingUniforms.uNight.value = this.sky.night;
@@ -315,7 +366,7 @@ export class World {
       const turbid = 1 + 1.6 * (u.uTurbid.value as number);
       (cu.uUnderSigma.value as THREE.Vector3).set(0.62 * turbid, 0.3 * turbid, 0.38 * turbid);
     }
-    post.secondPass = this.water.visible;
+    post.secondPass = this.water.inView(camera);
     (this.waterRestore.material as THREE.ShaderMaterial).uniforms.tSrc.value = post.refrColor.texture;
     u.tRefr.value = post.refrColor.texture;
     u.tDepthC.value = post.refrDepth.texture;

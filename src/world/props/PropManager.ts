@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { CulledInstances, type CullView } from '../InstanceCull';
 import { worldLit } from '../../engine/WorldLight';
 import type { Pickable } from '../../ui/Editor';
 import { refOf, type EditKind, type Overrides } from '../Overrides';
@@ -35,7 +36,14 @@ interface Kind {
   recs: Rec[];
   meshes: THREE.InstancedMesh[];
   radius: number;
-  onFill?: (mesh: THREE.InstancedMesh, recIdx: number[]) => void;
+  /** Per-instance attributes beyond the transform, with their value per record (street-name rows). */
+  channels?: { attr: THREE.InstancedBufferAttribute; value: (recIdx: number) => number }[];
+  /** Culled instances over all parts (made on first use, once every part exists). */
+  ci?: CulledInstances;
+  fills?: { src: Float32Array; value: (recIdx: number) => number }[];
+  /** Bounding sphere of the model: centre height and radius. */
+  cy?: number;
+  r?: number;
 }
 
 function stopTexture(): THREE.CanvasTexture {
@@ -226,6 +234,7 @@ export class PropManager {
         m.geometry.dispose();
         m.dispose();
       }
+      kind.ci?.dispose();
       this.kinds.delete(key);
     }
     if (this.wires) {
@@ -351,17 +360,10 @@ export class PropManager {
       this.root.add(m);
       kind.meshes.push(m);
       const which = key === 'a' ? 0 : 1;
-      const prev = kind.onFill;
-      kind.onFill = (mesh, recIdx) => {
-        prev?.(mesh, recIdx);
-        if (mesh !== m) return;
-        const attr = (mesh.geometry as THREE.BufferGeometry).getAttribute('aRow') as THREE.InstancedBufferAttribute;
-        recIdx.forEach((ri, i) => {
-          const nm = (recs[ri][5] as string[])[which] ?? (recs[ri][5] as string[])[0];
-          attr.setX(i, idx.get(nm) ?? 0);
-        });
-        attr.needsUpdate = true;
-      };
+      (kind.channels ??= []).push({
+        attr: row,
+        value: (ri) => idx.get((recs[ri][5] as string[])[which] ?? (recs[ri][5] as string[])[0]) ?? 0,
+      });
     }
     this.kinds.set('streetname:0', kind);
   }
@@ -447,27 +449,45 @@ export class PropManager {
     const p = new THREE.Vector3();
     let drawn = 0;
     for (const kind of this.kinds.values()) {
+      const ci = (kind.ci ??= this.makeCull(kind));
       const r2 = kind.radius * kind.radius;
-      const near: number[] = [];
-      kind.recs.forEach((r, i) => {
+      ci.clear();
+      const cy = kind.cy!, br = kind.r!;
+      for (let ri = 0; ri < kind.recs.length; ri++) {
+        const r = kind.recs[ri];
         const dx = r[0] - cam.x;
         const dz = r[2] - cam.z;
-        if (dx * dx + dz * dz < r2) near.push(i);
-      });
-      for (const mesh of kind.meshes) {
-        const n = Math.min(near.length, mesh.instanceMatrix.count);
-        for (let i = 0; i < n; i++) {
-          const r = kind.recs[near[i]];
-          q.setFromAxisAngle(up, r[3]);
-          m.compose(p.set(r[0], r[1] - 0.05, r[2]), q, one);
-          mesh.setMatrixAt(i, m);
-        }
-        mesh.count = n;
-        mesh.instanceMatrix.needsUpdate = true;
-        kind.onFill?.(mesh, near.slice(0, n));
+        if (dx * dx + dz * dz >= r2) continue;
+        q.setFromAxisAngle(up, r[3]);
+        m.compose(p.set(r[0], r[1] - 0.05, r[2]), q, one);
+        const i = ci.add(m, r[0], r[1] + cy, r[2], br, cy);
+        if (i < 0) break;
+        for (const f of kind.fills ?? []) f.src[i] = f.value(ri);
+        drawn++;
       }
-      drawn += near.length;
     }
     this.stats.drawn = drawn;
+  }
+
+  /** Per-instance culling for every kind (see CulledInstances). */
+  cull(view: CullView): void {
+    for (const kind of this.kinds.values()) kind.ci?.cull(view);
+  }
+
+  /** Culled instances for a kind, with a bounding sphere around all of its parts. */
+  private makeCull(kind: Kind): CulledInstances {
+    const box = new THREE.Box3();
+    for (const m of kind.meshes) {
+      m.geometry.computeBoundingBox();
+      box.union(m.geometry.boundingBox!);
+    }
+    const cy = (box.min.y + box.max.y) / 2;
+    const rx = Math.max(Math.abs(box.min.x), Math.abs(box.max.x));
+    const rz = Math.max(Math.abs(box.min.z), Math.abs(box.max.z));
+    kind.cy = cy;
+    kind.r = Math.hypot(rx, rz, (box.max.y - box.min.y) / 2) + 0.2;
+    const ci = new CulledInstances(kind.meshes, kind.meshes[0].instanceMatrix.count);
+    kind.fills = (kind.channels ?? []).map((c) => ({ src: ci.channel(c.attr), value: c.value }));
+    return ci;
   }
 }

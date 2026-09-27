@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { AP_MAX_KM, type Atmosphere } from './sky/Atmosphere';
+import type { FrameProfiler } from './FrameProfiler';
 import { worldLightUniforms } from './WorldLight';
 import { aoBlurFrag, aoFrag } from './aoGlsl';
 import { dofFrag } from './dofGlsl';
@@ -75,6 +76,7 @@ export class Post {
   private height = 1;
   private firstFrame = true;
   readonly settings: PostSettings;
+  prof: FrameProfiler | null = null;
 
   constructor(
     private readonly renderer: THREE.WebGLRenderer,
@@ -257,10 +259,17 @@ export class Post {
   /** Render the scene through the full pipeline to the canvas. */
   render(scene: THREE.Scene, camera: THREE.PerspectiveCamera, dt: number, time: number): void {
     const r = this.renderer;
+    const pr = this.prof;
+    pr?.begin('render');
+    pr?.gpu('opaque');
     r.setRenderTarget(this.sceneRT);
     r.clear(true, true, false);
     r.render(scene, camera);
+    pr?.end('render');
     if (this.secondPass) {
+      pr?.begin('render.water');
+      pr?.gpu('water');
+      if (pr) pr.pass = 'water';
       // Copy the resolved opaque frame, then draw the second layer (water) into the same target in a
       // single render call. A full-screen restore quad on that layer rewrites the colour first, because
       // resolving a multisampled target invalidates its colour samples; the depth samples are kept.
@@ -277,11 +286,15 @@ export class Post {
       camera.layers.mask = layers;
       r.autoClear = autoClear;
       r.shadowMap.autoUpdate = autoShadow;
+      pr?.end('render.water');
     }
+    pr?.begin('post');
+    if (pr) pr.pass = 'post';
     const cu = this.composite.uniforms;
     // Ambient occlusion at half resolution, blurred along x then y (depth-aware).
     cu.uAOK.value = this.settings.ao ? 0.75 : 0;
     if (this.settings.ao) {
+      pr?.gpu('ao');
       const a = this.mAO.uniforms;
       (a.uInvProj.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
       a.uProjScale.value = camera.projectionMatrix.elements[5] * this.aoRT.height * 0.5;
@@ -300,6 +313,7 @@ export class Post {
     (cu.uCamWorld.value as THREE.Matrix4).copy(camera.matrixWorld);
     cu.uViewAltKm.value = Math.max(camera.position.y / 1000, 0.01);
     cu.uTime.value = time;
+    pr?.gpu('composite');
     this.pass(this.composite, this.compRT);
     let comp = this.compRT;
     if (this.dof) {
@@ -319,6 +333,7 @@ export class Post {
     this.final.uniforms.tColor.value = comp.texture;
 
     // Auto exposure.
+    pr?.gpu('bloom+exposure');
     this.pass(this.mLum, this.lumRT);
     const au = this.mAdapt.uniforms;
     au.tPrev.value = this.adaptA.texture;
@@ -369,11 +384,14 @@ export class Post {
     fu.uSaturation.value = this.settings.saturation;
     fu.uContrast.value = this.settings.contrast;
     fu.uBarrel.value = this.settings.barrel;
+    pr?.gpu('final');
     if (this.settings.fxaa) {
       this.pass(this.final, this.ldrRT);
       this.pass(this.mFxaa, null);
     } else {
       this.pass(this.final, null);
     }
+    pr?.gpuStop();
+    pr?.end('post');
   }
 }

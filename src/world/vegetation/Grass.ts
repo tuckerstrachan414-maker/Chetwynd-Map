@@ -58,7 +58,8 @@ uniform vec2 uWindDir;
 uniform float uWind;
 uniform vec3 uCamSnap;
 uniform float uCell;
-uniform float uGridN;
+uniform vec2 uGridOrg;
+uniform float uGridW;
 uniform float uPerCell;
 uniform float uInner;
 uniform float uOuter;
@@ -79,15 +80,17 @@ const grassBegin = /* glsl */ `
   float id = float(gl_InstanceID);
   float cellId = floor(id / uPerCell);
   float sub = id - cellId * uPerCell;
-  vec2 c = vec2(mod(cellId, uGridN), floor(cellId / uGridN)) - floor(uGridN * 0.5);
+  // Only the cells under the camera's view are instanced (uGridOrg/uGridW, set per frame).
+  vec2 c = vec2(mod(cellId, uGridW), floor(cellId / uGridW)) + uGridOrg;
   vec2 cellW = (floor(uCamSnap.xz / uCell) + c) * uCell;
   vec2 h1 = gHash2(cellW * 1.37 + sub * 17.17);
   vec2 h2 = gHash2(cellW * 0.73 + sub * 5.31 + 11.0);
   vec2 wp = cellW + h1 * uCell;
-  float d = length(wp - cameraPosition.xz);
   vec2 fuv = fract(wp / uFieldSize);
   vec4 fi = texture2D(uFieldI, fuv);
   float gH = texture2D(uFieldH, fuv).r;
+  // Distance in 3D, so the grass thins out as the camera climbs above it.
+  float d = length(vec3(wp.x, gH, wp.y) - cameraPosition);
   float density = fi.r;
   float gtype = floor(fi.g * 255.0 + 0.5);
   float var = fi.b;
@@ -157,8 +160,14 @@ function clumpGeometry(blades: number, segs: number): THREE.InstancedBufferGeome
 
 interface Ring {
   mesh: THREE.Mesh;
+  geo: THREE.InstancedBufferGeometry;
   uniforms: Record<string, THREE.IUniform>;
   cell: number;
+  gridN: number;
+  /** Clumps per cell at full density, and as drawn for the quality setting. */
+  perCell: number;
+  perCellNow: number;
+  outer: number;
 }
 
 export class Grass {
@@ -196,9 +205,11 @@ export class Grass {
     const uniforms: Record<string, THREE.IUniform> = {
       ...vegUniforms,
       ...grassUniforms,
+      uDensity: { value: 1 },
       uCamSnap: { value: new THREE.Vector3() },
       uCell: { value: cell },
-      uGridN: { value: gridN },
+      uGridOrg: { value: new THREE.Vector2(-Math.floor(gridN / 2), -Math.floor(gridN / 2)) },
+      uGridW: { value: gridN },
       uPerCell: { value: perCell },
       uInner: { value: inner },
       uOuter: { value: outer },
@@ -237,7 +248,20 @@ export class Grass {
     mesh.receiveShadow = true;
     mesh.castShadow = false;
     this.root.add(mesh);
-    return { mesh, uniforms, cell };
+    return { mesh, geo, uniforms, cell, gridN, perCell, perCellNow: perCell, outer };
+  }
+
+  /**
+   * Quality density (1 = full): fewer clumps per cell rather than discarding clumps in the shader,
+   * so the vertex work shrinks with the density. The keep probability makes up the rounding.
+   */
+  setDensity(k: number): void {
+    for (const r of this.rings) {
+      const want = r.perCell * k;
+      r.perCellNow = Math.max(1, Math.ceil(want - 1e-6));
+      r.uniforms.uPerCell.value = r.perCellNow;
+      r.uniforms.uDensity.value = want / r.perCellNow;
+    }
   }
 
   setSeason(season: number): void {
@@ -307,13 +331,53 @@ export class Grass {
     return changed;
   }
 
-  update(cam: THREE.Vector3, player: THREE.Vector3 | null): void {
+  private readonly corner = new THREE.Vector3();
+  private readonly invProj = new THREE.Matrix4();
+
+  update(camera: THREE.PerspectiveCamera, player: THREE.Vector3 | null): void {
     if (!this.root.visible) return;
+    const cam = camera.position;
     if (this.updateField(cam)) {
       this.texH.needsUpdate = true;
       this.texI.needsUpdate = true;
     }
-    for (const r of this.rings) (r.uniforms.uCamSnap.value as THREE.Vector3).set(Math.floor(cam.x / r.cell) * r.cell, 0, Math.floor(cam.z / r.cell) * r.cell);
+    // The part of the ground the camera can see near it: the view pyramid cut off where the grass
+    // ends (apex and the four corners at that depth), as a box on the ground.
+    const g = this.store.heightAt(cam.x, cam.z);
+    const above = Number.isFinite(g) ? Math.max(0, cam.y - g) : 50;
+    let minX = cam.x, maxX = cam.x, minZ = cam.z, maxZ = cam.z;
+    const outer = Math.max(...this.rings.map((r) => r.outer));
+    const depth = Math.hypot(outer, above + 2) + 1;
+    this.invProj.copy(camera.projectionMatrixInverse);
+    for (const [nx, ny] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      // A point on the ray through this corner, scaled to the cut-off depth along the view axis.
+      const p = this.corner.set(nx, ny, 0.5).applyMatrix4(this.invProj);
+      p.multiplyScalar(depth / Math.max(-p.z, 1e-4)).applyMatrix4(camera.matrixWorld);
+      minX = Math.min(minX, p.x);
+      maxX = Math.max(maxX, p.x);
+      minZ = Math.min(minZ, p.z);
+      maxZ = Math.max(maxZ, p.z);
+    }
+    for (const r of this.rings) {
+      // Above the ring's reach nothing of it can show.
+      if (above > r.outer) {
+        r.geo.instanceCount = 0;
+        continue;
+      }
+      const cx = Math.floor(cam.x / r.cell);
+      const cz = Math.floor(cam.z / r.cell);
+      (r.uniforms.uCamSnap.value as THREE.Vector3).set(cx * r.cell, 0, cz * r.cell);
+      // Cell range relative to the camera cell, clamped to the ring's square.
+      const half = Math.floor(r.gridN / 2);
+      const i0 = THREE.MathUtils.clamp(Math.floor(minX / r.cell) - cx - 1, -half, r.gridN - 1 - half);
+      const i1 = THREE.MathUtils.clamp(Math.floor(maxX / r.cell) - cx + 1, -half, r.gridN - 1 - half);
+      const j0 = THREE.MathUtils.clamp(Math.floor(minZ / r.cell) - cz - 1, -half, r.gridN - 1 - half);
+      const j1 = THREE.MathUtils.clamp(Math.floor(maxZ / r.cell) - cz + 1, -half, r.gridN - 1 - half);
+      const w = i1 - i0 + 1;
+      (r.uniforms.uGridOrg.value as THREE.Vector2).set(i0, j0);
+      r.uniforms.uGridW.value = w;
+      r.geo.instanceCount = w * (j1 - j0 + 1) * r.perCellNow;
+    }
     if (player) grassUniforms.uPlayer.value.copy(player);
   }
 }

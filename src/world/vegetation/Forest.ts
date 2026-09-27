@@ -6,6 +6,7 @@ import { IMP_VIEWS, type ModelEntry, TreeLibrary, VARIANTS } from './TreeLibrary
 import { vegUniforms } from './TreeMaterials';
 import type { Pickable } from '../../ui/Editor';
 import { refOf, type Overrides } from '../Overrides';
+import { CulledInstances, type CullView } from '../InstanceCull';
 
 interface VegIndex {
   size: number;
@@ -89,6 +90,10 @@ interface NearSet {
   lod: 0 | 1;
   bark: THREE.InstancedMesh;
   leaves: THREE.InstancedMesh;
+  /** The near instances of this model, culled per instance each frame. */
+  ci: CulledInstances;
+  colL: Float32Array;
+  colB: Float32Array;
 }
 
 /** Impostor billboards + near instanced trees, streamed from per-chunk LiDAR vegetation. */
@@ -103,6 +108,7 @@ export class Forest {
   private readonly near: NearSet[] = [];
   private shrubCount = 0;
   private lastNear = new THREE.Vector3(1e9, 0, 0);
+
   loadRadius = 1900;
   nearRadius = 150;
   lod0Radius = 40;
@@ -162,16 +168,15 @@ export class Forest {
         const bark = new THREE.InstancedMesh(lod === 0 ? e.geo.bark0 : e.geo.bark1, e.bark, cap);
         const leaves = new THREE.InstancedMesh(lod === 0 ? e.geo.leaves0 : e.geo.leaves1, e.foliage, cap);
         for (const im of [bark, leaves]) {
-          im.count = 0;
-          im.frustumCulled = false;
           im.castShadow = true;
           im.receiveShadow = true;
-          im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
           im.setColorAt(0, new THREE.Color(1, 1, 1));
           this.root.add(im);
         }
         leaves.customDepthMaterial = e.foliageDepth;
-        this.near.push({ e, lod, bark, leaves });
+        // Bark and leaves share the instance transforms; each has its own colour.
+        const ci = new CulledInstances([leaves, bark], cap);
+        this.near.push({ e, lod, bark, leaves, ci, colL: ci.channel(leaves.instanceColor!), colB: ci.channel(bark.instanceColor!) });
       }
     }
     this.setSeason(0);
@@ -180,8 +185,8 @@ export class Forest {
   get stats(): Record<string, number> {
     let n0 = 0, n1 = 0, imp = 0;
     for (const n of this.near) {
-      if (n.lod === 0) n0 += n.leaves.count;
-      else n1 += n.leaves.count;
+      if (n.lod === 0) n0 += n.ci.n;
+      else n1 += n.ci.n;
     }
     for (const c of this.chunks.values()) imp += c.trees.length / STRIDE;
     return { chunks: this.chunks.size, lod0: n0, lod1: n1, trees: imp, shrubs: this.shrubCount };
@@ -429,10 +434,7 @@ export class Forest {
 
   private updateNear(cam: THREE.Vector3): void {
     this.lastNear.copy(cam);
-    for (const n of this.near) {
-      n.bark.count = 0;
-      n.leaves.count = 0;
-    }
+    for (const n of this.near) n.ci.clear();
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const pos = new THREE.Vector3();
@@ -463,19 +465,13 @@ export class Forest {
         const e = this.lib.entry(archetypeOf(sp), t[k + 6] % VARIANTS);
         const lod = d2 < this.lod0Radius * this.lod0Radius ? 0 : 1;
         const n = byEntry.get(e)![lod];
-        if (n.leaves.count >= n.leaves.instanceMatrix.count) continue;
+        if (n.ci.n >= n.ci.cap) continue;
         pos.set(t[k], t[k + 1] - 0.05, t[k + 2]);
         q.setFromAxisAngle(up, t[k + 7]);
         const sxz = t[k + 4] / e.model.R;
         scl.set(sxz, t[k + 3] / e.model.H, sxz);
         m.compose(pos, q, scl);
-        const idx = n.leaves.count++;
-        n.bark.count++;
-        n.leaves.setMatrixAt(idx, m);
-        n.bark.setMatrixAt(idx, m);
-        const lc = this.leafColor.get(sp)!;
-        n.leaves.setColorAt(idx, lc);
-        n.bark.setColorAt(idx, this.barkColor.get(sp)!);
+        this.putNear(n, m, this.leafColor.get(sp)!, this.barkColor.get(sp)!, t[k], t[k + 1], t[k + 2], t[k + 3], t[k + 4]);
       }
       // Shrubs: multi-stem bush / willow clump models, full detail close by.
       const sr2 = this.shrubRadius * this.shrubRadius;
@@ -489,30 +485,35 @@ export class Forest {
         const sp = u[k + 5];
         const e = this.lib.entry(archetypeOf(sp), u[k + 6] % VARIANTS);
         const n = byEntry.get(e)![d2 < s02 ? 0 : 1];
-        if (n.leaves.count >= n.leaves.instanceMatrix.count) continue;
+        if (n.ci.n >= n.ci.cap) continue;
         const h = Math.max(u[k + 3], 0.5);
         const rr = THREE.MathUtils.clamp(u[k + 4], h * 0.35, h * 1.1);
         pos.set(u[k], u[k + 1] - 0.08, u[k + 2]);
         q.setFromAxisAngle(up, u[k + 7]);
         scl.set(rr / e.model.R, h / e.model.H, rr / e.model.R);
         m.compose(pos, q, scl);
-        const idx = n.leaves.count++;
-        n.bark.count++;
-        n.leaves.setMatrixAt(idx, m);
-        n.bark.setMatrixAt(idx, m);
         const lc = this.leafColor.get(sp) ?? this.leafColor.get(20)!;
-        n.leaves.setColorAt(idx, tmpC.copy(lc).multiplyScalar(0.85 + 0.3 * ((u[k + 6] * 0.37) % 1)));
-        n.bark.setColorAt(idx, this.barkColor.get(sp) ?? this.barkColor.get(20)!);
+        tmpC.copy(lc).multiplyScalar(0.85 + 0.3 * ((u[k + 6] * 0.37) % 1));
+        this.putNear(n, m, tmpC, this.barkColor.get(sp) ?? this.barkColor.get(20)!, u[k], u[k + 1], u[k + 2], h, rr);
         shrubN++;
       }
     }
     this.shrubCount = shrubN;
-    for (const n of this.near) {
-      for (const im of [n.bark, n.leaves]) {
-        im.instanceMatrix.needsUpdate = true;
-        if (im.instanceColor) im.instanceColor.needsUpdate = true;
-      }
-    }
     void ARCHETYPES;
+  }
+
+  /** Append one near instance (transform, colours, bounds) to a model's list. */
+  private putNear(n: NearSet, m: THREE.Matrix4, leaf: THREE.Color, bark: THREE.Color, x: number, y: number, z: number, h: number, r: number): void {
+    // A sphere around trunk and crown: centre at 55 % of the height.
+    const hc = h * 0.55;
+    const i = n.ci.add(m, x, y + hc, z, Math.max(r, hc) + 0.5, hc);
+    if (i < 0) return;
+    leaf.toArray(n.colL, i * 3);
+    bark.toArray(n.colB, i * 3);
+  }
+
+  /** Per-instance culling of the near trees and shrubs (see CulledInstances). */
+  cull(view: CullView): void {
+    for (const ns of this.near) ns.ci.cull(view);
   }
 }

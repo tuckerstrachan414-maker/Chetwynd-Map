@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { StreamScan } from '../StreamScan';
 import { worldLit } from '../../engine/WorldLight';
 import { gunzip } from '../codec';
 import { buildTrack, tieGeometry } from './RailBuilder';
@@ -151,6 +152,7 @@ const structFrag = /* glsl */ `
 
 /** Streams per-chunk road surface and marking meshes. */
 export class RoadManager {
+  private scan: StreamScan | null = null;
   readonly root = new THREE.Group();
   private readonly chunks = new Map<string, RoadChunk>();
   private readonly loading = new Set<string>();
@@ -378,26 +380,25 @@ export class RoadManager {
   }
 
   update(cam: THREE.Vector3): boolean {
-    const s = this.size;
+    this.scan ??= new StreamScan(this.size, this.half);
+    const scan = this.scan;
+    if (!scan.due(cam)) return scan.complete;
     let pending = 0;
     for (const key of this.available) {
       if (this.chunks.has(key) || this.missing.has(key)) continue;
-      const [i, j] = key.split('_').map(Number);
-      const cx = -this.half + (i + 0.5) * s;
-      const cz = -this.half + (j + 0.5) * s;
-      if (Math.hypot(cx - cam.x, cz - cam.z) > this.radius) continue;
+      if (scan.distance(key, cam) > this.radius) continue;
       pending++;
       if (this.loading.has(key) || this.loading.size >= 6) continue;
       this.loading.add(key);
       this.load(key)
         .catch(() => this.missing.add(key))
-        .finally(() => this.loading.delete(key));
+        .finally(() => {
+          this.loading.delete(key);
+          scan.dirty = true;
+        });
     }
     for (const [key, c] of this.chunks) {
-      const [i, j] = key.split('_').map(Number);
-      const cx = -this.half + (i + 0.5) * s;
-      const cz = -this.half + (j + 0.5) * s;
-      if (Math.hypot(cx - cam.x, cz - cam.z) > this.radius + 300) {
+      if (scan.distance(key, cam) > this.radius + 300) {
         this.root.remove(c.group);
         c.group.traverse((o) => {
           const g = (o as THREE.Mesh).geometry;
@@ -408,6 +409,7 @@ export class RoadManager {
         this.onUnload?.(key);
       }
     }
-    return pending === 0 && this.loading.size === 0;
+    scan.complete = pending === 0 && this.loading.size === 0;
+    return scan.complete;
   }
 }

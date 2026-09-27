@@ -9,12 +9,21 @@ void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
 /** Scene + atmosphere composite: aerial perspective on geometry, physical sky elsewhere. */
 export const compositeFrag = /* glsl */ `
 precision highp float;
-precision highp sampler3D;
 ${atmosphereCommon}
 ${skyViewLookup}
 uniform sampler2D tColor;
 uniform sampler2D tDepth;
-uniform sampler3D tAerial;
+uniform sampler2D tAerial;
+// Aerial-perspective froxels: 32 slices of 32x32 side by side; trilinear lookup with clamped depth.
+vec4 aerialAt(vec2 uv, float w) {
+  float s = clamp(w * 32.0 - 0.5, 0.0, 31.0);
+  float s0 = floor(s);
+  float s1 = min(s0 + 1.0, 31.0);
+  float u = clamp(uv.x, 0.5 / 32.0, 1.0 - 0.5 / 32.0);
+  vec4 a = texture2D(tAerial, vec2((s0 + u) / 32.0, uv.y));
+  vec4 b = texture2D(tAerial, vec2((s1 + u) / 32.0, uv.y));
+  return mix(a, b, s - s0);
+}
 uniform sampler2D tSkySun;
 uniform sampler2D tSkyMoon;
 uniform sampler2D uTransmittance;
@@ -144,7 +153,7 @@ void main() {
     if (uAOK > 0.0) scene *= mix(1.0, texture2D(tAO, vUv).r, uAOK);
     float dist = length(vp.xyz);
     float w = sqrt(clamp(dist * 0.001 / uApMaxKm, 0.0, 1.0));
-    vec4 ap = texture(tAerial, vec3(vUv, w));
+    vec4 ap = aerialAt(vUv, w);
     float nearFade = clamp(w * float(${32}) * 2.0, 0.0, 1.0);
     float T = mix(1.0, ap.a, nearFade);
     // Under an overcast deck the haze is lit by the grey dome instead of the sun: in-scattering

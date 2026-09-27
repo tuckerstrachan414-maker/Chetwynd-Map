@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { StreamScan } from '../StreamScan';
 import { gunzip } from '../codec';
 import { createWaterMaterial, createWaterUniforms } from './WaterMaterial';
 import { createWaterTexture } from './waterTexture';
@@ -35,6 +36,7 @@ const _o = new THREE.Vector3();
  * mesh of the whole valley for distant views.
  */
 export class WaterManager {
+  private scan: StreamScan | null = null;
   readonly root = new THREE.Group();
   readonly uniforms = createWaterUniforms();
   private readonly material: THREE.ShaderMaterial;
@@ -73,6 +75,21 @@ export class WaterManager {
 
   get visible(): boolean {
     return this.root.children.length > 0;
+  }
+
+  private readonly frustum = new THREE.Frustum();
+  private readonly viewProj = new THREE.Matrix4();
+
+  /** Any water surface inside the camera's view: otherwise the frame skips the water pass and its copies. */
+  inView(camera: THREE.PerspectiveCamera): boolean {
+    if (!this.visible) return false;
+    this.viewProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    this.frustum.setFromProjectionMatrix(this.viewProj, THREE.WebGLCoordinateSystem, camera.reversedDepth);
+    let hit = false;
+    this.root.traverseVisible((o) => {
+      if (!hit && (o as THREE.Mesh).isMesh && this.frustum.intersectsObject(o)) hit = true;
+    });
+    return hit;
   }
 
   setSeason(season: number): void {
@@ -165,26 +182,25 @@ export class WaterManager {
   }
 
   update(cam: THREE.Vector3): boolean {
-    const s = this.size;
+    this.scan ??= new StreamScan(this.size, this.half);
+    const scan = this.scan;
+    if (!scan.due(cam)) return scan.complete;
     let pending = 0;
     for (const key of this.available) {
       if (this.chunks.has(key) || this.missing.has(key)) continue;
-      const [i, j] = key.split('_').map(Number);
-      const cx = -this.half + (i + 0.5) * s;
-      const cz = -this.half + (j + 0.5) * s;
-      if (Math.hypot(cx - cam.x, cz - cam.z) > this.radius) continue;
+      if (scan.distance(key, cam) > this.radius) continue;
       pending++;
       if (this.loading.has(key) || this.loading.size >= 6) continue;
       this.loading.add(key);
       this.load(key)
         .catch(() => this.missing.add(key))
-        .finally(() => this.loading.delete(key));
+        .finally(() => {
+          this.loading.delete(key);
+          scan.dirty = true;
+        });
     }
     for (const [key, c] of this.chunks) {
-      const [i, j] = key.split('_').map(Number);
-      const cx = -this.half + (i + 0.5) * s;
-      const cz = -this.half + (j + 0.5) * s;
-      if (Math.hypot(cx - cam.x, cz - cam.z) > this.radius + 300) {
+      if (scan.distance(key, cam) > this.radius + 300) {
         this.root.remove(c.group);
         c.group.traverse((m) => {
           const mesh = m as THREE.Mesh;
@@ -197,6 +213,7 @@ export class WaterManager {
       }
     }
     this.stats.chunks = this.chunks.size;
-    return pending === 0 && this.loading.size === 0;
+    scan.complete = pending === 0 && this.loading.size === 0;
+    return scan.complete;
   }
 }

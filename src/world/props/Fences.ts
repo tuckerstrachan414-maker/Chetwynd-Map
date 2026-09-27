@@ -25,6 +25,8 @@ export interface FenceBox {
 }
 
 const CELL = 250;
+/** Fences draw merged per 500 m cell (a handful of draw calls); colliders stay per 250 m cell. */
+const RENDER_CELL = 500;
 
 // Board fence: vertical cedar boards with gaps, grain and weathering, in fence-local metres (uv).
 const boardFrag = /* glsl */ `
@@ -33,7 +35,7 @@ const boardFrag = /* glsl */ `
     return mix(mix(fh(i), fh(i + vec2(1, 0)), u.x), mix(fh(i + vec2(0, 1)), fh(i + vec2(1, 1)), u.x), u.y); }
 `;
 
-/** Wooden, chain-link and rail fences, merged per 250 m cell. */
+/** Wooden, chain-link and rail fences, merged per 500 m cell. */
 export class Fences {
   readonly root = new THREE.Group();
   readonly boxes = new Map<string, FenceBox[]>();
@@ -153,9 +155,10 @@ export class Fences {
     this.recs = recs;
     const byCell = new Map<string, Record<string, THREE.BufferGeometry[]>>();
     const bucket = (x: number, z: number) => {
+      const rkey = `${Math.floor(x / RENDER_CELL)}_${Math.floor(z / RENDER_CELL)}`;
+      let b = byCell.get(rkey);
+      if (!b) byCell.set(rkey, (b = { board: [], chain: [], post: [], steel: [], rail: [] }));
       const key = `${Math.floor(x / CELL)}_${Math.floor(z / CELL)}`;
-      let b = byCell.get(key);
-      if (!b) byCell.set(key, (b = { board: [], chain: [], post: [], steel: [], rail: [] }));
       let bx = this.boxes.get(key);
       if (!bx) this.boxes.set(key, (bx = []));
       return { geo: b, boxes: bx };

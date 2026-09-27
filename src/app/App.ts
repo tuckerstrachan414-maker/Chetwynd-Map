@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { FrameProfiler } from '../engine/FrameProfiler';
+import { CulledInstances } from '../world/InstanceCull';
 import { Post } from '../engine/Post';
 import { DynamicResolution, detectQuality, gpuName, QUALITY, QUALITY_LEVELS, saveQuality, type QualityLevel } from '../engine/Quality';
 import { FlyController } from '../sim/FlyController';
@@ -7,7 +9,6 @@ import { Physics } from '../sim/Physics';
 import { Player } from '../sim/Player';
 import { Hud } from '../ui/Hud';
 import { Settings } from '../ui/Settings';
-import { grassUniforms } from '../world/vegetation/Grass';
 import type { BuildingRec } from '../world/buildings/BuildingGen';
 import { WEATHERS, type WeatherKind } from '../world/Weather';
 import { Bench } from './Bench';
@@ -73,6 +74,11 @@ export class App {
   private dynRes: DynamicResolution | null = null;
   private bench: Bench | null = null;
   private settings!: Settings;
+  /** Frame timing by section (?prof shows it on screen; the benchmark reports it). */
+  private prof!: FrameProfiler;
+  private profPanel: HTMLElement | null = null;
+  private profNext = 0;
+  private lastFrameAt = 0;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -135,6 +141,8 @@ export class App {
       if (this.wantsLock()) this.lock();
     });
     const progress = (label: string, frac: number) => this.hud.setLoading(label, frac);
+    const qp = new URLSearchParams(location.search);
+    this.prof = new FrameProfiler(this.renderer, qp.has('prof') || qp.has('bench'));
     // Quality: ?q=, else a saved choice or the GPU tier (headless tests render at High).
     this.quality = p.quality && (QUALITY_LEVELS as string[]).includes(p.quality) ? (p.quality as QualityLevel)
       : p.headless ? 'high' : detectQuality(this.renderer);
@@ -146,6 +154,8 @@ export class App {
     await this.world.init({ chunkRadius: chunkR || undefined, onProgress: progress });
     progress('Starting physics', 0.9);
     this.post = new Post(this.renderer, this.world.atmosphere, { msaa: p.headless ? 0 : qs.msaa, fxaa: p.headless || qs.fxaa, ao: qs.ao });
+    this.world.prof = this.prof;
+    this.post.prof = this.prof;
     this.physics = new Physics();
     await this.physics.init();
     this.player = new Player(this.physics);
@@ -190,6 +200,14 @@ export class App {
       this.hud.setVisible(false);
       this.hud.setStartVisible(false);
     }
+    // ?prof shows the panel; ?prof=0 only records (for scripts reading app.prof).
+    if (qp.has('prof') && qp.get('prof') !== '0') {
+      const panel = document.createElement('pre');
+      this.profPanel = panel;
+      panel.style.cssText = 'position:absolute;right:12px;top:48px;margin:0;padding:8px 10px;background:rgba(8,10,14,.82);color:#dfe6ee;'
+        + 'font:11px/1.3 ui-monospace,Consolas,monospace;border-radius:6px;pointer-events:none;z-index:25;max-height:calc(100vh - 60px);overflow:hidden';
+      this.ui.appendChild(panel);
+    }
 
     // Default spawn: Carver's Row on the highway frontage, facing the carvings.
     const [x, z] = p.at ?? [-1034, -508];
@@ -226,7 +244,7 @@ export class App {
     }
     this.post.settings.ao = q.ao;
     w.water.uniforms.uSSR.value = q.ssr ? 1 : 0;
-    grassUniforms.uDensity.value = q.grass;
+    w.grass.setDensity(q.grass);
     w.forest.setRadii(q.treeNear, q.treeLod0, q.shrubs);
     if (!keepChunkRadius) {
       w.chunks.loadRadius = q.chunks;
@@ -372,6 +390,46 @@ export class App {
   private startedAt = 0;
   /** The player has clicked past the start card. */
   private started = false;
+  private warming = false;
+
+  /**
+   * Compile every shader before play starts, so nothing stalls a frame when it first comes into view
+   * (on Windows each compile can take a tenth of a second). Materials compile in parallel where the
+   * browser supports it; then one hidden frame with everything visible builds the shadow-pass variants.
+   */
+  private async warmUp(): Promise<void> {
+    const r = this.renderer;
+    const t0 = performance.now();
+    try {
+      await Promise.race([r.compileAsync(this.scene, this.camera), new Promise((res) => setTimeout(res, 20000))]);
+    } catch (err) {
+      console.warn('shader warm-up', err);
+    }
+    const saved: [THREE.Object3D, boolean, boolean][] = [];
+    this.scene.traverse((o) => {
+      saved.push([o, o.visible, o.frustumCulled]);
+      o.visible = true;
+      o.frustumCulled = false;
+    });
+    CulledInstances.forceVisible = true;
+    const rt = new THREE.WebGLRenderTarget(64, 64, { type: THREE.HalfFloatType, depthBuffer: true });
+    const prev = r.getRenderTarget();
+    try {
+      r.setRenderTarget(rt);
+      r.render(this.scene, this.camera);
+    } catch (err) {
+      console.warn('shader warm-up render', err);
+    } finally {
+      r.setRenderTarget(prev);
+      rt.dispose();
+      CulledInstances.forceVisible = false;
+      for (const [o, v, f] of saved) {
+        o.visible = v;
+        o.frustumCulled = f;
+      }
+    }
+    console.info(`shaders ready: ${r.info.programs?.length ?? 0} programs in ${Math.round(performance.now() - t0)} ms`);
+  }
   private prevWantLock = false;
 
   /** Walking, flying, driving and the drone steer with the captured mouse (photo mode and the editor keep the cursor). */
@@ -406,6 +464,12 @@ export class App {
   }
 
   private frameInner(): void {
+    const now = performance.now();
+    const rawMs = this.lastFrameAt ? now - this.lastFrameAt : 16.7;
+    this.lastFrameAt = now;
+    const pr = this.prof;
+    pr.frameStart();
+    pr.begin('frame');
     this.timer.update();
     const dt = Math.min(this.timer.getDelta(), 0.1);
     if (!this.paused) this.time += dt;
@@ -422,6 +486,7 @@ export class App {
     this.handleKeys();
     const cam = this.camera.position;
 
+    pr.begin('sim');
     if (this.mode === 'walk') {
       if (!this.spawned) {
         const g = this.world.groundHeight(cam.x, cam.z);
@@ -449,7 +514,7 @@ export class App {
     } else if (this.mode !== 'fly') {
       this.modes.update(this.mode, dt, this.time);
     } else if (this.bench && this.world.ready) {
-      this.bench.update(dt, this.camera, (x, z) => this.world.groundHeight(x, z), this.canvas);
+      this.bench.update(dt, rawMs, this.camera, (x, z) => this.world.groundHeight(x, z), this.canvas, this.prof);
     } else {
       this.fly.update(dt);
       const g = this.world.groundHeight(cam.x, cam.z);
@@ -458,17 +523,15 @@ export class App {
         else if (cam.y < g + 0.5) cam.y = g + 0.5;
       }
     }
+    pr.end('sim');
     this.camera.updateMatrixWorld();
     if (this.mode === 'walk' || this.mode === 'fly') this.world.playerFeet = this.mode === 'walk' && this.spawned ? this.player.position : null;
     else if (this.mode === 'photo' || this.mode === 'edit') this.world.playerFeet = null;
     this.world.update(this.camera, this.post, this.time);
     this.post.render(this.scene, this.camera, dt, this.time);
     this.input.endFrame();
-    // Dynamic resolution holds the frame rate (not while composing a photo).
-    if (this.dynRes && this.mode !== 'photo' && this.world.ready && this.dynRes.update(dt * 1000, dt)) {
-      this.renderer.setPixelRatio(this.basePixelRatio * QUALITY[this.quality].scale * this.dynRes.scale);
-      this.resize();
-    }
+    pr.begin('ui');
+    this.updateDynamicResolution(rawMs, dt);
 
     if (this.frameCount % 6 === 0) {
       const c = this.world.carvings.lookedAt(this.camera);
@@ -492,9 +555,13 @@ export class App {
       this.startModeDone = true;
       this.setMode(p.mode as Mode);
     }
-    if (!this.loaded && ((this.world.ready && placed) || performance.now() - this.startedAt > 30000)) {
-      this.loaded = true;
-      this.hud.setStartReady();
+    if (!this.loaded && !this.warming && ((this.world.ready && placed) || performance.now() - this.startedAt > 30000)) {
+      this.warming = true;
+      this.hud.setLoading('Preparing shaders', 0.97);
+      void this.warmUp().finally(() => {
+        this.loaded = true;
+        this.hud.setStartReady();
+      });
     }
     // Back from a panel, photo mode or the editor without the mouse captured: ask for a click.
     const want = this.wantsLock();
@@ -506,5 +573,41 @@ export class App {
     if (this.world.ready && placed && walkDone) this.readyFrames++;
     else this.readyFrames = 0;
     if (this.readyFrames > 8 && window.__cw) window.__cw.ready = true;
+    pr.end('ui');
+    pr.end('frame');
+    pr.frameEnd(rawMs);
+    if (this.profPanel && now > this.profNext) {
+      this.profNext = now + 1000;
+      this.showProfile();
+    }
+  }
+
+  /**
+   * Dynamic resolution holds the frame rate when the GPU is the limit (not while composing a photo).
+   * Rendering fewer pixels does not help a frame held up by the CPU, so then the scale stays put.
+   */
+  private updateDynamicResolution(rawMs: number, dt: number): void {
+    if (!this.dynRes || this.mode === 'photo' || !this.world.ready) return;
+    const gpuMs = this.prof.lastGpuMs;
+    const cpuMs = this.prof.lastCpuMs;
+    const gpuBound = Number.isFinite(gpuMs) ? gpuMs : rawMs > cpuMs * 1.35 ? rawMs : NaN;
+    if (!Number.isFinite(gpuBound) || !this.dynRes.update(gpuBound, dt)) return;
+    this.renderer.setPixelRatio(this.basePixelRatio * QUALITY[this.quality].scale * this.dynRes.scale);
+    this.resize();
+  }
+
+  /** ?prof: frame timing by section, refreshed every second. */
+  private showProfile(): void {
+    const s = this.prof.summary();
+    const fmt = (o: Record<string, number>, n = 12) => Object.entries(o).slice(0, n).map(([k, v]) => `${k.padEnd(18)}${v.toFixed(2).padStart(7)}`).join('\n');
+    const gpuTotal = s.gpu ? Object.values(s.gpu).reduce((a, b) => a + b, 0) : NaN;
+    const drawTotal = Object.values(s.draws).reduce((a, b) => a + b, 0);
+    this.profPanel!.textContent = [
+      `${(1000 / s.frameMs).toFixed(1)} fps  ${s.frameMs.toFixed(1)} ms/frame  ${this.post.pixelWidth}x${this.post.pixelHeight}  ${this.quality}`,
+      `CPU ms (main thread)\n${fmt(s.cpu)}`,
+      s.gpu ? `GPU ms (total ${gpuTotal.toFixed(1)})\n${fmt(s.gpu)}` : 'GPU ms: timer queries not available in this browser',
+      `draws ${Math.round(drawTotal)}  tris ${(s.tris / 1e6).toFixed(2)} M  programs ${s.programs}\n${fmt(s.draws, 16)}`,
+      s.hitches.length ? `long frames\n${s.hitches.slice(-6).map((h) => `${h.ms} ms: ${h.what}`).join('\n')}` : '',
+    ].filter(Boolean).join('\n\n');
   }
 }

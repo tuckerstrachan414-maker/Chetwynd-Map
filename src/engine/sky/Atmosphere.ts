@@ -31,7 +31,8 @@ export class Atmosphere {
   readonly multiScatter = rt(32, 32);
   readonly skyViewSun = rt(192, 108);
   readonly skyViewMoon = rt(192, 108);
-  readonly aerial: THREE.WebGL3DRenderTarget;
+  /** Aerial-perspective froxels: 32 depth slices of 32x32, laid side by side (one draw fills them all). */
+  readonly aerial: THREE.WebGLRenderTarget;
   readonly haze = { value: 1.6 };
   private readonly quad = new FullScreenQuad();
   private readonly mTrans: THREE.ShaderMaterial;
@@ -43,14 +44,7 @@ export class Atmosphere {
   private readonly invViewProj = new THREE.Matrix4();
 
   constructor() {
-    this.aerial = new THREE.WebGL3DRenderTarget(32, 32, AP_SLICES, {
-      type: THREE.HalfFloatType,
-      format: THREE.RGBAFormat,
-      depthBuffer: false,
-    });
-    this.aerial.texture.minFilter = THREE.LinearFilter;
-    this.aerial.texture.magFilter = THREE.LinearFilter;
-    this.aerial.texture.wrapR = THREE.ClampToEdgeWrapping;
+    this.aerial = rt(32 * AP_SLICES, 32);
     const common = { uHaze: this.haze };
     this.mTrans = new THREE.ShaderMaterial({ vertexShader: quadVert, fragmentShader: transmittanceFrag, uniforms: { ...common } });
     this.mMulti = new THREE.ShaderMaterial({
@@ -77,7 +71,6 @@ export class Atmosphere {
         uSunDir: { value: new THREE.Vector3(0, 1, 0) },
         uInvViewProj: { value: this.invViewProj },
         uCamWorld: { value: new THREE.Vector3() },
-        uSlice: { value: 0 },
         uMaxDistKm: { value: AP_MAX_KM },
         uSlices: { value: AP_SLICES },
       },
@@ -88,9 +81,9 @@ export class Atmosphere {
     }
   }
 
-  private draw(renderer: THREE.WebGLRenderer, mat: THREE.Material, target: THREE.WebGLRenderTarget | THREE.WebGL3DRenderTarget, layer = 0): void {
+  private draw(renderer: THREE.WebGLRenderer, mat: THREE.Material, target: THREE.WebGLRenderTarget): void {
     this.quad.material = mat;
-    renderer.setRenderTarget(target, layer);
+    renderer.setRenderTarget(target);
     this.quad.render(renderer);
   }
 
@@ -120,10 +113,7 @@ export class Atmosphere {
     (u.uSunDir.value as THREE.Vector3).copy(lightDir);
     (u.uCamWorld.value as THREE.Vector3).setFromMatrixPosition(camera.matrixWorld);
     this.invViewProj.multiplyMatrices(camera.matrixWorld, camera.projectionMatrixInverse);
-    for (let s = 0; s < AP_SLICES; s++) {
-      u.uSlice.value = s;
-      this.draw(renderer, this.mAerial, this.aerial, s);
-    }
+    this.draw(renderer, this.mAerial, this.aerial);
     renderer.setRenderTarget(prevTarget);
     renderer.autoClear = prevAutoClear;
   }
