@@ -280,6 +280,19 @@ export class Forest {
     this.chunks.set(key, chunk);
   }
 
+  /** Tree arrays (stride 8) of chunks near (x, z), for trunk colliders. */
+  treesNear(x: number, z: number, radius: number): Float32Array[] {
+    const out: Float32Array[] = [];
+    const s = this.index.size;
+    for (const [key, c] of this.chunks) {
+      const [i, j] = this.available.get(key)!;
+      const cx = -this.index.half + (i + 0.5) * s;
+      const cz = -this.index.half + (j + 0.5) * s;
+      if (Math.hypot(cx - x, cz - z) < radius + 190) out.push(c.trees);
+    }
+    return out;
+  }
+
   update(cam: THREE.Vector3): boolean {
     const s = this.index.size;
     let pending = 0;

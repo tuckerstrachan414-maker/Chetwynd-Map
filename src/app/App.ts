@@ -1,23 +1,13 @@
 import * as THREE from 'three';
 import { Post } from '../engine/Post';
-import { Atmosphere } from '../engine/sky/Atmosphere';
-import { SkyEnvironment } from '../engine/sky/SkyEnvironment';
 import { FlyController } from '../sim/FlyController';
-import { SkyState, SUN_E } from '../world/SkyState';
-import { Terrain } from '../world/terrain/Terrain';
-import { TerrainIndex, type TerrainIndexJson } from '../world/terrain/TerrainIndex';
-import { createTerrainMaterials, type ImageryInfo } from '../world/terrain/TerrainMaterial';
-import { TerrainStore } from '../world/terrain/TerrainStore';
+import { Input } from '../sim/Input';
+import { Physics } from '../sim/Physics';
+import { Player } from '../sim/Player';
+import { Hud } from '../ui/Hud';
+import type { BuildingRec } from '../world/buildings/BuildingGen';
 import { readParams, type Params } from './params';
-import { loadKtx2Array } from '../engine/textures/TextureArrays';
-import { ChunkManager } from '../world/ChunkManager';
-import { RoadManager } from '../world/roads/RoadManager';
-import { Forest } from '../world/vegetation/Forest';
-import { TreeLibrary } from '../world/vegetation/TreeLibrary';
-import { vegUniforms } from '../world/vegetation/TreeMaterials';
-import { buildingUniforms, createFacadeMaterial, createRoofMaterial, createTrimMaterial } from '../world/buildings/BuildingMaterials';
-
-const WORLD = './world';
+import { SEASONS, World } from './World';
 
 declare global {
   interface Window {
@@ -25,41 +15,33 @@ declare global {
   }
 }
 
-async function loadTexture(url: string, srgb = true): Promise<THREE.Texture> {
-  const tex = await new THREE.TextureLoader().loadAsync(url);
-  tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-  tex.flipY = false;
-  tex.anisotropy = 8;
-  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.needsUpdate = true;
-  return tex;
-}
+export type Mode = 'walk' | 'fly';
 
-/** Top-level application: owns renderer, scene, camera and the frame loop. */
+/** Top-level application: renderer, frame loop, control modes, physics and UI. */
 export class App {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
   readonly params: Params;
-  readonly sky = new SkyState();
   private readonly timer = new THREE.Timer();
-  private atmosphere!: Atmosphere;
+  world!: World;
   private post!: Post;
-  private skyEnv!: SkyEnvironment;
-  private terrain!: Terrain;
-  private store!: TerrainStore;
-  private controller!: FlyController;
-  private chunks!: ChunkManager;
-  private chunksComplete = false;
-  private forest!: Forest;
-  private roads!: RoadManager;
-  private roadsComplete = false;
-  private forestComplete = false;
-  private readonly sun = new THREE.DirectionalLight(0xffffff, 1);
+  private input!: Input;
+  private hud!: Hud;
+  private physics!: Physics;
+  private player!: Player;
+  private fly!: FlyController;
+  mode: Mode = 'walk';
+  private spawned = false;
   private time = 0;
   private readyFrames = 0;
-  private placed = false;
   private frameCount = 0;
+  private fpsAcc = 0;
+  private fpsFrames = 0;
+  private fps = 0;
+  /** Headless test: walk forward for this many seconds after spawning. */
+  private autoWalk = 0;
+  private walked = 0;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -73,7 +55,7 @@ export class App {
       reversedDepthBuffer: true,
       preserveDrawingBuffer: this.params.headless,
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.params.headless ? 1 : 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.params.headless ? 1 : 1.5));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
@@ -84,86 +66,45 @@ export class App {
 
   async start(): Promise<void> {
     const p = this.params;
-    const [indexJson, imgJson] = await Promise.all([
-      fetch(`${WORLD}/terrain/index.json`).then((r) => r.json() as Promise<TerrainIndexJson>),
-      fetch(`${WORLD}/imagery/index.json`).then((r) => r.json() as Promise<Record<string, ImageryInfo>>),
-    ]);
-    const [near, root] = await Promise.all([loadTexture(`${WORLD}/imagery/near.jpg`), loadTexture(`${WORLD}/imagery/root.jpg`)]);
-    const index = new TerrainIndex(indexJson);
-    this.store = new TerrainStore(index, `${WORLD}/terrain`, 256, `${WORLD}/material`);
-    const groundIndex = (await fetch('./assets/terrain/index.json').then((r) => r.json())) as {
-      layers: { id: number; tile: number; mean: number[] }[];
-    };
-    const ids = groundIndex.layers.map((l) => String(l.id).padStart(2, '0'));
-    const [gA, gN] = await Promise.all([
-      loadKtx2Array(this.renderer, ids.map((id) => `./assets/terrain/albedo_${id}.ktx2`), true),
-      loadKtx2Array(this.renderer, ids.map((id) => `./assets/terrain/normal_${id}.ktx2`), false),
-    ]);
-    const srgbToLin = (c: number) => { const v = c / 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
-    const layers = {
-      albedo: gA,
-      normal: gN,
-      tiles: groundIndex.layers.map((l) => l.tile),
-      means: groundIndex.layers.map((l) => new THREE.Vector3(srgbToLin(l.mean[0]), srgbToLin(l.mean[1]), srgbToLin(l.mean[2]))),
-    };
-    const uniforms: Record<string, THREE.IUniform> = {};
-    const mats = createTerrainMaterials(uniforms, near, root, imgJson.near, imgJson.root, layers, this.store.matAtlas);
-    this.terrain = new Terrain(index, this.store, mats.material, mats.depth);
-    Object.assign(uniforms, this.terrain.uniforms);
-    this.scene.add(this.terrain.mesh);
-
-    const chunkIndex = await fetch(`${WORLD}/chunks/index.json`).then((r) => r.json());
-    this.chunks = new ChunkManager(chunkIndex, `${WORLD}/chunks`, {
-      facade: createFacadeMaterial(),
-      roof: createRoofMaterial(),
-      trim: createTrimMaterial(),
-    });
-    this.scene.add(this.chunks.root);
+    this.hud = new Hud(this.ui);
+    this.hud.setStartVisible(!p.headless);
+    if (p.headless) this.hud.setVisible(false);
+    this.world = new World(this.renderer, this.scene);
     const chunkR = Number(new URLSearchParams(location.search).get('chunkR') ?? 0);
-    if (chunkR > 0) {
-      this.chunks.loadRadius = chunkR;
-      this.chunks.unloadRadius = chunkR + 400;
-    }
+    await this.world.init({ chunkRadius: chunkR || undefined });
+    this.post = new Post(this.renderer, this.world.atmosphere, { msaa: p.headless ? 0 : 4, fxaa: p.headless });
+    this.physics = new Physics();
+    await this.physics.init();
+    this.player = new Player(this.physics);
+    this.input = new Input(this.canvas);
+    this.fly = new FlyController(this.camera, this.canvas);
+    this.fly.enabled = false;
+    this.hud.onStartClick(() => {
+      this.hud.setStartVisible(false);
+      this.input.requestLock();
+    });
+    this.canvas.addEventListener('click', () => this.input.requestLock());
 
-    const roadIndex = (await fetch(`${WORLD}/roads/index.json`).then((r) => r.json())) as { size: number; half: number; chunks: string[] };
-    this.roads = new RoadManager(`${WORLD}/roads`, gA, gN, layers.tiles, roadIndex.half, roadIndex.size, new Set(roadIndex.chunks));
-    this.scene.add(this.roads.root);
+    const w = this.world;
+    w.sky.year = p.date[0];
+    w.sky.month = p.date[1];
+    w.sky.day = p.date[2];
+    w.sky.hour = p.hour;
+    if (p.season && (SEASONS as readonly string[]).includes(p.season)) w.setSeason(p.season as (typeof SEASONS)[number]);
 
-    const trees = new TreeLibrary(this.renderer);
-    await trees.init();
-    const vegIndex = await fetch(`${WORLD}/veg/index.json`).then((r) => r.json());
-    this.forest = new Forest(trees, vegIndex, `${WORLD}/veg`);
-    this.scene.add(this.forest.root);
+    w.chunks.onChunkLoaded = (key, raw) => this.physics.addBuildings(key, (raw.buildings ?? []) as BuildingRec[]);
+    w.chunks.onChunkUnloaded = (key) => this.physics.removeBuildings(key);
 
-    this.atmosphere = new Atmosphere();
-    this.post = new Post(this.renderer, this.atmosphere, { msaa: p.headless ? 0 : 4, fxaa: p.headless });
-    this.skyEnv = new SkyEnvironment(this.renderer, this.atmosphere);
-
-    this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(4096, 4096);
-    const sc = this.sun.shadow.camera;
-    sc.left = -160;
-    sc.right = 160;
-    sc.top = 160;
-    sc.bottom = -160;
-    sc.near = 1;
-    sc.far = 4000;
-    const reversed = this.renderer.state.buffers.depth.getReversed();
-    this.sun.shadow.bias = reversed ? 0.0003 : -0.0003;
-    this.sun.shadow.normalBias = 0.6;
-    this.scene.add(this.sun, this.sun.target);
-
-    this.sky.year = p.date[0];
-    this.sky.month = p.date[1];
-    this.sky.day = p.date[2];
-    this.sky.hour = p.hour;
-
-    const [x, z] = p.at ?? [300, -600];
+    const [x, z] = p.at ?? [560, -330];
     this.camera.position.set(x, 1200, z);
-    this.controller = new FlyController(this.camera, this.canvas);
-    this.controller.yaw = THREE.MathUtils.degToRad(-p.yaw);
-    this.controller.pitch = THREE.MathUtils.degToRad(p.pitch);
-    this.controller.enabled = !p.headless;
+    this.player.yaw = THREE.MathUtils.degToRad(-p.yaw);
+    this.player.pitch = THREE.MathUtils.degToRad(p.pitch);
+    this.fly.yaw = this.player.yaw;
+    this.fly.pitch = this.player.pitch;
+    const q = new URLSearchParams(location.search);
+    this.autoWalk = Number(q.get('autowalk') ?? 0);
+    this.mode = p.headless && !this.autoWalk ? 'fly' : 'walk';
+    this.hud.setMode(this.mode);
 
     window.__cw = { ready: false, stats: () => this.stats(), app: this };
     this.resize();
@@ -174,13 +115,15 @@ export class App {
     const info = this.renderer.info;
     return {
       frame: this.frameCount,
+      fps: Math.round(this.fps),
       calls: info.render.calls,
       tris: info.render.triangles,
-      terrain: this.terrain.stats,
       cam: this.camera.position.toArray().map((v) => Math.round(v * 10) / 10),
-      level: this.store.levelAt(this.camera.position.x, this.camera.position.z),
-      chunks: this.chunks.stats,
-      forest: this.forest.stats,
+      mode: this.mode,
+      walked: Math.round(this.walked * 10) / 10,
+      player: this.player ? this.player.position.toArray().map((v) => Math.round(v * 100) / 100) : null,
+      ground: Math.round(this.world.groundHeight(this.camera.position.x, this.camera.position.z) * 100) / 100,
+      ...this.world.stats(),
     };
   }
 
@@ -194,15 +137,31 @@ export class App {
     this.camera.updateProjectionMatrix();
   }
 
-  private placeCamera(): void {
-    const c = this.camera.position;
-    const g = this.store.heightAt(c.x, c.z);
-    if (!Number.isFinite(g)) return;
-    if (!this.placed || this.params.headless) {
-      c.y = g + this.params.h;
-      this.placed = true;
-    } else if (c.y < g + 0.5) {
-      c.y = g + 0.5;
+  setMode(m: Mode): void {
+    if (m === this.mode) return;
+    if (m === 'fly') {
+      this.fly.yaw = this.player.yaw;
+      this.fly.pitch = this.player.pitch;
+      this.fly.enabled = true;
+    } else {
+      this.fly.enabled = false;
+      const g = this.world.groundHeight(this.camera.position.x, this.camera.position.z);
+      if (Number.isFinite(g)) this.player.spawn(this.camera.position.x, g, this.camera.position.z);
+      this.player.yaw = this.fly.yaw;
+      this.player.pitch = this.fly.pitch;
+    }
+    this.mode = m;
+    this.hud.setMode(m);
+  }
+
+  private handleKeys(): void {
+    const i = this.input;
+    if (i.hit('KeyF')) this.setMode(this.mode === 'fly' ? 'walk' : 'fly');
+    if (i.hit('KeyH')) this.hud.toggleHelp();
+    if (i.hit('KeyT')) this.world.sky.hour = (this.world.sky.hour + (i.down('ShiftLeft') ? -1 : 1) + 24) % 24;
+    if (i.hit('KeyY')) {
+      const k = (SEASONS.indexOf(this.world.season) + 1) % SEASONS.length;
+      this.world.setSeason(SEASONS[k]);
     }
   }
 
@@ -211,48 +170,63 @@ export class App {
     const dt = Math.min(this.timer.getDelta(), 0.1);
     this.time += dt;
     this.frameCount++;
-    this.controller.update(dt);
-    this.placeCamera();
-    this.camera.updateMatrixWorld();
-
-    const altKm = Math.max(this.camera.position.y / 1000, 0.01);
-    this.sky.update(altKm, this.atmosphere.haze.value);
-    this.atmosphere.update(this.renderer, this.camera, this.sky.sunDir, this.sky.moonDir, this.sky.lightDir);
-    const cu = this.post.composite.uniforms;
-    (cu.uSunDir.value as THREE.Vector3).copy(this.sky.sunDir);
-    (cu.uMoonDir.value as THREE.Vector3).copy(this.sky.moonDir);
-    cu.uSunE.value = SUN_E;
-    cu.uMoonE.value = this.sky.moonE;
-    cu.uApE.value = this.sky.lightDir.equals(this.sky.sunDir) ? SUN_E : this.sky.moonE;
-    cu.uStars.value = this.sky.night * 0.02;
-    if (this.skyEnv.update(this.sky.sunDir, this.sky.moonDir, SUN_E, this.sky.moonE, altKm)) {
-      this.scene.environment = this.skyEnv.texture;
+    this.fpsAcc += dt;
+    this.fpsFrames++;
+    if (this.fpsAcc > 0.5) {
+      this.fps = this.fpsFrames / this.fpsAcc;
+      this.fpsAcc = 0;
+      this.fpsFrames = 0;
     }
-
-    // Sun/moon directional light with a shadow frustum snapped to texels around the camera.
+    const p = this.params;
+    this.input.pollGamepad();
+    this.handleKeys();
     const cam = this.camera.position;
-    this.sun.color.copy(this.sky.lightColor);
-    this.sun.intensity = 1;
-    const texel = (this.sun.shadow.camera.right * 2) / this.sun.shadow.mapSize.x;
-    const tx = Math.round(cam.x / texel) * texel;
-    const tz = Math.round(cam.z / texel) * texel;
-    this.sun.target.position.set(tx, cam.y, tz);
-    this.sun.position.copy(this.sun.target.position).addScaledVector(this.sky.lightDir, 2000);
-    this.sun.target.updateMatrixWorld();
 
-    this.terrain.update(this.camera);
-    this.chunksComplete = this.chunks.update(this.camera.position);
-    this.forestComplete = this.forest.update(this.camera.position);
-    this.roadsComplete = this.roads.update(this.camera.position);
-    vegUniforms.uTime.value = this.time;
-    buildingUniforms.uTime.value = this.time;
-    buildingUniforms.uNight.value = this.sky.night;
-    buildingUniforms.uInterior.value = 0.08 + 0.35 * THREE.MathUtils.clamp(this.sky.sunDir.y * 3, 0, 1);
+    if (this.mode === 'walk') {
+      if (!this.spawned) {
+        const g = this.world.groundHeight(cam.x, cam.z);
+        if (Number.isFinite(g) && this.world.store.levelAt(cam.x, cam.z) === 0) {
+          this.physics.updateTerrain(this.world.store, cam.x, cam.z);
+          this.player.spawn(cam.x, g, cam.z);
+          this.spawned = true;
+        } else {
+          cam.y = Number.isFinite(g) ? g + 1.7 : cam.y;
+        }
+      }
+      if (this.spawned) {
+        this.physics.updateTerrain(this.world.store, cam.x, cam.z);
+        this.physics.updateTrunks(this.world.forest.treesNear(cam.x, cam.z, 45), cam.x, cam.z);
+        if (this.autoWalk > 0 && this.walked < this.autoWalk) {
+          this.input.keys.add('KeyW');
+          this.walked += 1 / 30;
+          this.player.update(1 / 30, this.input, this.camera);
+        } else {
+          this.input.keys.delete('KeyW');
+          this.player.update(dt, this.input, this.camera);
+        }
+        this.physics.step();
+      }
+    } else {
+      this.fly.update(dt);
+      const g = this.world.groundHeight(cam.x, cam.z);
+      if (Number.isFinite(g)) {
+        if (p.headless) cam.y = g + p.h;
+        else if (cam.y < g + 0.5) cam.y = g + 0.5;
+      }
+    }
+    this.camera.updateMatrixWorld();
+    this.world.update(this.camera, this.post, this.time);
     this.post.render(this.scene, this.camera, dt, this.time);
+    this.input.endFrame();
 
-    if (this.terrain.complete && this.placed && this.chunksComplete && this.forestComplete && this.roadsComplete) this.readyFrames++;
+    if (this.frameCount % 15 === 0) {
+      const s = this.world.forest.stats;
+      this.hud.setStatus(`${Math.round(this.fps)} fps · ${this.world.season} · ${String(Math.floor(this.world.sky.hour)).padStart(2, '0')}:${String(Math.round((this.world.sky.hour % 1) * 60)).padStart(2, '0')} · trees ${s.lod0 + s.lod1}`);
+    }
+    const placed = Number.isFinite(this.world.groundHeight(cam.x, cam.z));
+    const walkDone = !this.autoWalk || this.walked >= this.autoWalk;
+    if (this.world.ready && placed && walkDone) this.readyFrames++;
     else this.readyFrames = 0;
     if (this.readyFrames > 8 && window.__cw) window.__cw.ready = true;
-    this.ui.dataset.frame = String(this.frameCount);
   }
 }

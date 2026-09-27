@@ -59,7 +59,8 @@ self.onmessage = async (e: MessageEvent<{ id: number; url: string }>) => {
     const out = { walls: pack(streams.walls), roofs: pack(streams.roofs), trims: pack(streams.trims) };
     const transfer: Transferable[] = [];
     for (const s of Object.values(out)) for (const a of Object.values(s)) transfer.push((a as Float32Array).buffer);
-    (self as unknown as Worker).postMessage({ id, ok: true, data: out, raw: { ...json, buildings: undefined } }, transfer);
+    const colliders = buildings.map((b) => ({ poly: b.poly, base: b.base, baseMin: b.baseMin, eave: b.eave }));
+    (self as unknown as Worker).postMessage({ id, ok: true, data: out, raw: { ...json, buildings: colliders } }, transfer);
   } catch (err) {
     (self as unknown as Worker).postMessage({ id, ok: false, error: String(err) });
   }

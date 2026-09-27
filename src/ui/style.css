@@ -11,3 +11,13 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0f0d; col
 #view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; outline: none; }
 #ui { position: fixed; inset: 0; pointer-events: none; }
 #ui > * { pointer-events: auto; }
+.hud { position: fixed; inset: 0; pointer-events: none; font-size: 13px; }
+.hud.hidden, .hud .hidden { display: none !important; }
+.hud-cross { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: rgba(255,255,255,0.75); box-shadow: 0 0 2px rgba(0,0,0,0.6); }
+.hud-mode { position: absolute; left: 16px; top: 14px; padding: 4px 10px; border-radius: 4px; background: var(--ui-bg); color: var(--ui-accent); letter-spacing: 0.12em; font-weight: 600; }
+.hud-status { position: absolute; right: 16px; top: 14px; padding: 4px 10px; border-radius: 4px; background: var(--ui-bg); color: var(--ui-muted); font-variant-numeric: tabular-nums; }
+.hud-help { position: absolute; left: 16px; bottom: 16px; max-width: min(92vw, 720px); padding: 8px 12px; border-radius: 6px; background: var(--ui-bg); line-height: 1.6; }
+.hud-start { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: auto; cursor: pointer; background: radial-gradient(ellipse at center, rgba(0,0,0,0.15), rgba(0,0,0,0.55)); text-align: center; }
+.hud-start h1 { margin: 0 0 6px; font-size: clamp(28px, 6vw, 56px); font-weight: 700; letter-spacing: 0.02em; text-shadow: 0 2px 12px rgba(0,0,0,0.5); }
+.hud-start p { margin: 0 0 10px; font-size: 18px; color: var(--ui-accent); }
+.hud-start small { color: var(--ui-muted); }
