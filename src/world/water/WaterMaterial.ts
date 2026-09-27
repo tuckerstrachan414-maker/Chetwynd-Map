@@ -11,6 +11,8 @@ function dummyShadow(): THREE.DepthTexture {
   t.format = THREE.DepthFormat;
   t.compareFunction = THREE.GreaterEqualCompare;
   t.minFilter = t.magFilter = THREE.LinearFilter;
+  // Not attached to a render target, so it must be uploaded explicitly.
+  t.needsUpdate = true;
   return t;
 }
 

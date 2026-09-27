@@ -62,6 +62,31 @@ export class App {
     this.renderer.toneMapping = THREE.NoToneMapping;
     this.camera = new THREE.PerspectiveCamera(this.params.fov, 1, 0.1, 200000);
     window.addEventListener('resize', () => this.resize());
+    if (new URLSearchParams(location.search).has('gldebug')) this.installGlDebug();
+  }
+
+  /** Debug aid (?gldebug): report the first GL errors together with the material that drew. */
+  private installGlDebug(): void {
+    const gl = this.renderer.getContext() as WebGL2RenderingContext;
+    let reported = 0;
+    const wrap = (name: 'drawElements' | 'drawArrays' | 'drawElementsInstanced' | 'drawArraysInstanced') => {
+      const orig = (gl[name] as (...a: unknown[]) => void).bind(gl);
+      (gl as unknown as Record<string, unknown>)[name] = (...args: unknown[]) => {
+        orig(...args);
+        if (reported >= 12) return;
+        const err = gl.getError();
+        if (err === gl.NO_ERROR) return;
+        reported++;
+        const cur = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram | null;
+        const progs = (this.renderer.info.programs ?? []) as unknown as { program: WebGLProgram; name: string; cacheKey: string }[];
+        const p = progs.find((x) => x.program === cur);
+        console.error(`GL error 0x${err.toString(16)} in ${name} program=${p?.name ?? '?'} key=${(p?.cacheKey ?? '').slice(0, 80)}`);
+      };
+    };
+    wrap('drawElements');
+    wrap('drawArrays');
+    wrap('drawElementsInstanced');
+    wrap('drawArraysInstanced');
   }
 
   async start(): Promise<void> {
