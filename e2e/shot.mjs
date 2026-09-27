@@ -40,6 +40,13 @@ for (const q of queries.length ? queries : ['']) {
     await new Promise((r) => setTimeout(r, 5000));
   }
   if (!ok) console.log('  (timeout: capturing anyway)');
+  // Optional page script before the capture (e.g. an editor action), then let a few frames render.
+  if (process.env.SHOT_PRE) {
+    const pre = await page.evaluate(process.env.SHOT_PRE).catch((e) => `pre error: ${e.message}`);
+    if (pre !== undefined) console.log('pre:', typeof pre === 'string' ? pre : JSON.stringify(pre));
+    const f0 = await page.evaluate(() => window.__cw.stats().frame);
+    while ((await page.evaluate(() => window.__cw.stats().frame)) < f0 + 4) await new Promise((r) => setTimeout(r, 3000));
+  }
   const stats = await page.evaluate(() => window.__cw.stats && window.__cw.stats());
   const file = join(outDir, `${String(idx++).padStart(2, '0')}_${q.replace(/[^a-z0-9=,.-]+/gi, '_').slice(0, 80) || 'default'}.png`);
   await page.screenshot({ path: file, timeout: 240000 });
