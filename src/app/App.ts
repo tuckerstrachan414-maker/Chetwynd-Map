@@ -11,6 +11,7 @@ import { TerrainStore } from '../world/terrain/TerrainStore';
 import { readParams, type Params } from './params';
 import { loadKtx2Array } from '../engine/textures/TextureArrays';
 import { ChunkManager } from '../world/ChunkManager';
+import { RoadManager } from '../world/roads/RoadManager';
 import { Forest } from '../world/vegetation/Forest';
 import { TreeLibrary } from '../world/vegetation/TreeLibrary';
 import { vegUniforms } from '../world/vegetation/TreeMaterials';
@@ -51,6 +52,8 @@ export class App {
   private chunks!: ChunkManager;
   private chunksComplete = false;
   private forest!: Forest;
+  private roads!: RoadManager;
+  private roadsComplete = false;
   private forestComplete = false;
   private readonly sun = new THREE.DirectionalLight(0xffffff, 1);
   private time = 0;
@@ -121,6 +124,10 @@ export class App {
       this.chunks.loadRadius = chunkR;
       this.chunks.unloadRadius = chunkR + 400;
     }
+
+    const roadIndex = (await fetch(`${WORLD}/roads/index.json`).then((r) => r.json())) as { size: number; half: number; chunks: string[] };
+    this.roads = new RoadManager(`${WORLD}/roads`, gA, gN, layers.tiles, roadIndex.half, roadIndex.size, new Set(roadIndex.chunks));
+    this.scene.add(this.roads.root);
 
     const trees = new TreeLibrary(this.renderer);
     await trees.init();
@@ -236,13 +243,14 @@ export class App {
     this.terrain.update(this.camera);
     this.chunksComplete = this.chunks.update(this.camera.position);
     this.forestComplete = this.forest.update(this.camera.position);
+    this.roadsComplete = this.roads.update(this.camera.position);
     vegUniforms.uTime.value = this.time;
     buildingUniforms.uTime.value = this.time;
     buildingUniforms.uNight.value = this.sky.night;
     buildingUniforms.uInterior.value = 0.08 + 0.35 * THREE.MathUtils.clamp(this.sky.sunDir.y * 3, 0, 1);
     this.post.render(this.scene, this.camera, dt, this.time);
 
-    if (this.terrain.complete && this.placed && this.chunksComplete && this.forestComplete) this.readyFrames++;
+    if (this.terrain.complete && this.placed && this.chunksComplete && this.forestComplete && this.roadsComplete) this.readyFrames++;
     else this.readyFrames = 0;
     if (this.readyFrames > 8 && window.__cw) window.__cw.ready = true;
     this.ui.dataset.frame = String(this.frameCount);
