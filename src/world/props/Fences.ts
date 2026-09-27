@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { worldLit } from '../../engine/WorldLight';
+import type { Pickable } from '../../ui/Editor';
+import { refOf, type Overrides } from '../Overrides';
 
 /** fences.json (pipeline/fences.py): polylines [x, y(ground), z], height, type, source. */
 interface FenceRec {
@@ -8,6 +10,8 @@ interface FenceRec {
   h: number;
   t: 'privacy' | 'chainlink' | 'rail';
   src: string;
+  /** Editor identity: "fence@x_z" of the first point, or "#id" for a user-drawn fence. */
+  ref?: string;
 }
 
 /** A straight fence panel for collisions: centre, half length, half height, heading. */
@@ -92,10 +96,61 @@ export class Fences {
     };
   }
 
+  private data: FenceRec[] = [];
+  private recs: FenceRec[] = [];
+  private overrides: Overrides | null = null;
+  /** Called after every rebuild (the app refreshes the fence colliders). */
+  onRebuild: () => void = () => {};
+
   async init(): Promise<void> {
     const res = await fetch(this.url);
     if (!res.ok) return;
-    const data = (await res.json()) as { fences: FenceRec[] };
+    this.data = ((await res.json()) as { fences: FenceRec[] }).fences;
+    this.build();
+  }
+
+  /** Apply the editor's fence deletions and user-drawn fences. */
+  applyOverrides(ov: Overrides): void {
+    this.overrides = ov;
+    this.build();
+  }
+
+  /** Fence segments near (x, z) for the editor; LiDAR- and OSM-derived fences count as mapped. */
+  pickables(x: number, z: number, radius: number): Pickable[] {
+    const out: Pickable[] = [];
+    const r2 = radius * radius;
+    for (const f of this.recs) {
+      for (let k = 0; k + 1 < f.p.length; k++) {
+        const a = f.p[k], b = f.p[k + 1];
+        const mx = (a[0] + b[0]) / 2, mz = (a[2] + b[2]) / 2;
+        if ((mx - x) ** 2 + (mz - z) ** 2 > r2) continue;
+        const len = Math.hypot(b[0] - a[0], b[2] - a[2]);
+        out.push({ kind: 'fence', ref: f.ref!, x: mx, y: (a[1] + b[1]) / 2, z: mz, rot: 0, h: f.h, r: Math.max(0.6, len / 2), src: f.src === 'user' ? 'user' : 'mapped' });
+      }
+    }
+    return out;
+  }
+
+  private build(): void {
+    for (const m of [...this.root.children]) {
+      this.root.remove(m);
+      (m as THREE.Mesh).geometry.dispose();
+    }
+    this.boxes.clear();
+    const removed = new Set<string>();
+    const recs: FenceRec[] = [];
+    if (this.overrides) {
+      const { removed: r, added } = this.overrides.forKind('fence');
+      for (const x of r) removed.add(x);
+      for (const a of added) {
+        if (a.pts && a.pts.length >= 2) recs.push({ p: a.pts, h: a.h ?? 1.6, t: a.ft ?? 'privacy', src: 'user', ref: `#${a.id}` });
+      }
+    }
+    for (const f of this.data) {
+      const ref = refOf('fence', f.p[0][0], f.p[0][2]);
+      if (!removed.has(ref)) recs.push({ ...f, ref });
+    }
+    this.recs = recs;
     const byCell = new Map<string, Record<string, THREE.BufferGeometry[]>>();
     const bucket = (x: number, z: number) => {
       const key = `${Math.floor(x / CELL)}_${Math.floor(z / CELL)}`;
@@ -105,7 +160,7 @@ export class Fences {
       if (!bx) this.boxes.set(key, (bx = []));
       return { geo: b, boxes: bx };
     };
-    for (const f of data.fences) {
+    for (const f of recs) {
       let along = 0;
       for (let k = 0; k + 1 < f.p.length; k++) {
         const a = new THREE.Vector3(...f.p[k]);
@@ -131,6 +186,7 @@ export class Fences {
         this.root.add(m);
       }
     }
+    this.onRebuild();
   }
 
   private post(f: FenceRec, p: THREE.Vector3, geo: Record<string, THREE.BufferGeometry[]>): void {

@@ -162,7 +162,8 @@ export class App {
     w.chunks.onChunkUnloaded = (key) => this.physics.removeBuildings(key);
     w.roads.onColliders = (key, meshes) => this.physics.addMeshes(`road_${key}`, meshes);
     w.roads.onUnload = (key) => this.physics.removeMeshes(`road_${key}`);
-    this.physics.addWalls([...w.fences.boxes.values()].flat());
+    w.fences.onRebuild = () => this.physics.setWalls([...w.fences.boxes.values()].flat());
+    w.fences.onRebuild();
     this.modes = new Modes({
       camera: this.camera, renderer: this.renderer, scene: this.scene, canvas: this.canvas, ui: this.ui, world: w,
       physics: this.physics, input: this.input, hud: this.hud, post: this.post, fly: this.fly,

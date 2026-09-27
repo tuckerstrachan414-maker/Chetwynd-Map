@@ -5,7 +5,7 @@
  * committed as the new overrides.json.
  */
 
-export type EditKind = 'tree' | 'shrub' | 'lamp' | 'pole' | 'hydrant' | 'stop' | 'bench' | 'bin' | 'playground' | 'streetname' | 'signal' | 'tower';
+export type EditKind = 'tree' | 'shrub' | 'lamp' | 'pole' | 'hydrant' | 'stop' | 'bench' | 'bin' | 'playground' | 'streetname' | 'signal' | 'tower' | 'fence';
 
 export interface EditItem {
   /** Stable identity of the original object ("kind@x_z" in decimetres) for moves and deletes. */
@@ -22,6 +22,9 @@ export interface EditItem {
   sp?: number;
   /** Props: model variant (lamps: 1 = arterial). */
   variant?: number;
+  /** Fences: polyline [x, ground y, z] and type. */
+  pts?: [number, number, number][];
+  ft?: 'privacy' | 'chainlink' | 'rail';
   /** Unique id of an added object (so it can itself be moved or deleted). */
   id?: string;
 }

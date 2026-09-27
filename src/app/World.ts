@@ -148,6 +148,7 @@ export class World {
     this.scene.add(this.weather.root);
     this.fences = new Fences(`${WORLD}/props/fences.json`);
     await this.fences.init();
+    this.fences.applyOverrides(this.overrides);
     this.scene.add(this.fences.root);
     this.carvings = new Carvings(`${WORLD}/props/carvings.json`);
     await this.carvings.init();
@@ -164,6 +165,7 @@ export class World {
     this.overrides.onChange(() => {
       this.props.applyOverrides(this.overrides);
       this.forest.applyOverrides(this.overrides);
+      this.fences.applyOverrides(this.overrides);
       this.lightField.setLights(this.props.lampLights());
     });
     this.grass = new Grass(this.store);

@@ -48,3 +48,18 @@ describe('editor overrides', () => {
     expect(doc.items.some((i) => i.kind === 'hydrant')).toBe(true);
   });
 });
+
+describe('fence overrides', () => {
+  it('adds drawn fences and deletes mapped ones by their first point', () => {
+    const ov = new Overrides();
+    ov.add({ op: 'add', kind: 'fence', id: 'f1', ft: 'chainlink', h: 1.5, pts: [[0, 600, 0], [10, 600, 0]] });
+    ov.add({ op: 'del', kind: 'fence', ref: refOf('fence', 5, 5) });
+    const k = ov.forKind('fence');
+    expect(k.added).toHaveLength(1);
+    expect(k.added[0].pts).toHaveLength(2);
+    expect(k.removed.has('fence@50_50')).toBe(true);
+    // Deleting the drawn fence drops it.
+    ov.add({ op: 'del', kind: 'fence', ref: '#f1' });
+    expect(ov.forKind('fence').added).toHaveLength(0);
+  });
+});

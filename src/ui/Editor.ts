@@ -32,6 +32,7 @@ interface Tool {
   sp?: number;
   h?: number;
   variant?: number;
+  ft?: 'privacy' | 'chainlink' | 'rail';
 }
 
 // Species codes (src/world/vegetation/species.ts).
@@ -56,6 +57,9 @@ const TOOLS: Tool[] = [
   { id: 'hydrant', label: 'Fire hydrant', kind: 'hydrant' },
   { id: 'stop', label: 'Stop sign', kind: 'stop' },
   { id: 'pole', label: 'Power pole', kind: 'pole' },
+  { id: 'fenceBoard', label: 'Board fence (click points, Enter)', kind: 'fence', ft: 'privacy', h: 1.8 },
+  { id: 'fenceChain', label: 'Chain-link fence (click points, Enter)', kind: 'fence', ft: 'chainlink', h: 1.5 },
+  { id: 'fenceRail', label: 'Rail fence (click points, Enter)', kind: 'fence', ft: 'rail', h: 1.2 },
 ];
 
 const CSS = `
@@ -133,7 +137,7 @@ export class Editor {
     this.el.appendChild(row);
     const hint = document.createElement('div');
     hint.className = 'hint';
-    hint.textContent = 'Left click: place / select. Drag a selection to move it (snaps to the ground). R / Shift+R rotate, [ ] resize trees, Del delete, Ctrl+Z undo. Right-drag to look, WASD to move, Space/Ctrl up/down. E leaves the editor. Export saves overrides.json: commit it to public/world/ to make edits permanent.';
+    hint.textContent = 'Left click: place / select. Drag a selection to move it (snaps to the ground). R / Shift+R rotate, [ ] resize trees, Del delete, Ctrl+Z undo. Fences: click each corner, Enter to finish, Backspace removes the last point, Esc cancels. Right-drag to look, WASD to move, Space/Ctrl up/down. E leaves the editor. Export saves overrides.json: commit it to public/world/ to make edits permanent.';
     this.el.appendChild(hint);
     parent.appendChild(this.el);
     this.setTool(TOOLS[0]);
@@ -171,6 +175,7 @@ export class Editor {
 
   setActive(on: boolean): void {
     this.active = on;
+    if (!on) this.setDraft([]);
     this.el.classList.toggle('hidden', !on);
     this.ring.visible = on && !!this.selected;
     this.overlay.visible = on && this.overlayOn;
@@ -179,6 +184,7 @@ export class Editor {
 
   private setTool(t: Tool): void {
     this.tool = t;
+    this.setDraft([]);
     for (const [id, b] of this.toolButtons) b.classList.toggle('on', id === t.id);
   }
 
@@ -241,12 +247,17 @@ export class Editor {
     if (this.tool.id === 'select') {
       const p = this.pick(ray);
       this.select(p);
-      this.dragging = !!p;
+      // Fences are redrawn rather than dragged.
+      this.dragging = !!p && p.kind !== 'fence';
       return;
     }
     const hit = this.groundHit(ray);
     if (!hit || !this.tool.kind) return;
     const t = this.tool;
+    if (t.kind === 'fence') {
+      this.setDraft([...this.draft, hit.clone()]);
+      return;
+    }
     const toCam = Math.atan2(this.host.camera.position.x - hit.x, this.host.camera.position.z - hit.z);
     const item: EditItem = {
       op: 'add', kind: t.kind!, id: this.host.overrides.newId(), x: round2(hit.x), y: round2(hit.y), z: round2(hit.z),
@@ -306,8 +317,15 @@ export class Editor {
       e.preventDefault();
       return;
     }
+    if (this.draft.length) {
+      if (e.code === 'Enter' || e.code === 'NumpadEnter') this.finishFence();
+      else if (e.code === 'Escape') this.setDraft([]);
+      else if (e.code === 'Backspace') this.setDraft(this.draft.slice(0, -1));
+      return;
+    }
     const s = this.selected;
     if (!s) return;
+    if (s.kind === 'fence' && e.code !== 'Delete' && e.code !== 'Backspace') return;
     if (e.code === 'Delete' || e.code === 'Backspace') {
       this.host.overrides.add({ op: 'del', kind: s.kind, ref: s.ref });
       this.select(null);
@@ -320,6 +338,34 @@ export class Editor {
       s.r *= k;
       this.commitSelected();
     }
+  }
+
+  private draft: THREE.Vector3[] = [];
+  private draftLine: THREE.Line | null = null;
+
+  /** The fence being drawn: its corner points and a preview line just above the ground. */
+  private setDraft(pts: THREE.Vector3[]): void {
+    this.draft = pts;
+    if (!this.draftLine) {
+      this.draftLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd24d, depthTest: false }));
+      this.draftLine.renderOrder = 21;
+      this.draftLine.frustumCulled = false;
+      this.host.scene.add(this.draftLine);
+    }
+    const g = this.draftLine.geometry;
+    g.setFromPoints(pts.map((p) => p.clone().add(new THREE.Vector3(0, 0.3, 0))));
+    this.draftLine.visible = pts.length > 0;
+  }
+
+  private finishFence(): void {
+    const t = this.tool;
+    if (this.draft.length >= 2) {
+      this.host.overrides.add({
+        op: 'add', kind: 'fence', id: this.host.overrides.newId(), ft: t.ft ?? 'privacy', h: t.h ?? 1.6,
+        pts: this.draft.map((p) => [round2(p.x), round2(p.y), round2(p.z)] as [number, number, number]),
+      });
+    }
+    this.setDraft([]);
   }
 
   private select(p: Pickable | null): void {
@@ -337,7 +383,7 @@ export class Editor {
     const rr = s.kind === 'tree' || s.kind === 'shrub' ? Math.max(0.8, s.r) : 1;
     this.ring.scale.setScalar(rr);
     this.ring.position.set(s.x, s.y + 0.05, s.z);
-    const src = s.src === 'mapped' ? (s.kind === 'tree' ? 'mapped (LiDAR crown)' : 'mapped (OpenStreetMap)') : s.src === 'inferred' ? 'inferred (rules / LiDAR density)' : 'your edit';
+    const src = s.src === 'mapped' ? (s.kind === 'tree' ? 'mapped (LiDAR crown)' : s.kind === 'fence' ? 'mapped (LiDAR / OpenStreetMap)' : 'mapped (OpenStreetMap)') : s.src === 'inferred' ? 'inferred (rules / LiDAR density)' : 'your edit';
     this.selInfo.textContent = `${s.kind}${s.h && (s.kind === 'tree' || s.kind === 'shrub') ? ` · ${s.h.toFixed(1)} m` : ''}\n${src}\n${s.x.toFixed(1)}, ${s.z.toFixed(1)}`;
   }
 

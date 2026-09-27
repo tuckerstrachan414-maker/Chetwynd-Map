@@ -39,8 +39,8 @@ The editor's overlay (E) colours these orange, and every one can be moved, delet
 
 Building interiors (exteriors only), vehicles other than yours, people, and small private objects
 that no open dataset records: sheds under ~10 m², yard ornaments, and the many short or see-through
-yard fences the LiDAR cannot resolve (the editor does not place fences yet; they can be added to
-`public/world/props/fences.json` as polylines).
+yard fences the LiDAR cannot resolve (draw them with the editor's fence tools: board, chain-link or
+rail).
 
 ## Freshness
 

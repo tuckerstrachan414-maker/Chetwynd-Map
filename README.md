@@ -61,6 +61,7 @@ The editor overlay marks each object by source: **green** mapped, **orange** inf
 your edits.
 
 - **Left click** places the selected item on the ground, or selects an object.
+- **Fences:** pick a board, chain-link or rail fence, click each corner, then **Enter** (Backspace removes the last point, Esc cancels).
 - **Drag** a selection to move it; it snaps to the terrain.
 - **R** / **Shift+R** rotate, **[ ]** resize trees, **Del** delete, **Ctrl+Z** undo.
 - **Right-drag** looks around; WASD moves, Space/Ctrl go up and down.

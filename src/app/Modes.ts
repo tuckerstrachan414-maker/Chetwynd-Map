@@ -105,7 +105,7 @@ export class Modes {
       scene: h.scene,
       overrides: w.overrides,
       ground: (x, z) => w.groundHeight(x, z),
-      pickables: (x, z, r) => [...w.props.pickables(x, z, r), ...w.forest.pickables(x, z, r)],
+      pickables: (x, z, r) => [...w.props.pickables(x, z, r), ...w.forest.pickables(x, z, r), ...w.fences.pickables(x, z, r)],
     });
     this.menu = this.buildMenu();
   }

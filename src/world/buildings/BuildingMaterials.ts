@@ -110,10 +110,13 @@ Fac facade(vec3 V) {
   f.glass = 0.0;
   float grain = bfbm(uv * vec2(3.0, 8.0) + seed * 17.0);
   // ---- base wall material
+  // Patterns fade to their average once a course or rib is only a few pixels tall, so distant
+  // walls do not alias into moire.
   if (wallType == 0) { // vinyl lap siding, 0.2 m exposure
     float t = fract(uv.y / 0.2);
-    float lip = smoothstep(0.0, 0.08, t);
-    f.nTS = normalize(vec3(0.0, mix(1.8, -0.18, lip), 1.0));
+    float aa = smoothstep(0.12, 0.45, fwidth(uv.y / 0.2));
+    float lip = mix(smoothstep(0.0, 0.08, t), 0.96, aa);
+    f.nTS = normalize(vec3(0.0, mix(mix(1.8, -0.18, lip), 0.0, aa), 1.0));
     f.albedo *= mix(0.7, 1.0, lip) * (0.97 + 0.06 * grain);
     f.rough = 0.5;
   } else if (wallType == 1) { // stucco
@@ -127,15 +130,18 @@ Fac facade(vec3 V) {
     b.x += mod(row, 2.0) * 0.5;
     vec2 cell = floor(b);
     vec2 fb = fract(b);
+    vec2 fw = fwidth(b);
+    float aa = smoothstep(0.15, 0.5, max(fw.x, fw.y));
     float mortar = 1.0 - step(0.045, fb.x) * step(fb.x, 0.955) * step(0.12, fb.y) * step(fb.y, 0.88);
-    vec3 brick = wallCol * (0.78 + 0.4 * bh(cell + seed)) * (0.93 + 0.1 * bn(uv * 30.0));
-    f.albedo = mix(brick, vec3(0.62, 0.6, 0.56), mortar);
-    f.nTS = normalize(vec3(0.0, 0.0, 1.0) + vec3((fb.x < 0.05 ? -0.6 : fb.x > 0.95 ? 0.6 : 0.0), (fb.y < 0.12 ? -0.6 : fb.y > 0.88 ? 0.6 : 0.0), 0.0) * mortar);
+    vec3 brick = wallCol * mix((0.78 + 0.4 * bh(cell + seed)) * (0.93 + 0.1 * bn(uv * 30.0)), 0.98, aa);
+    f.albedo = mix(brick, vec3(0.62, 0.6, 0.56), mix(mortar, 0.3, aa));
+    f.nTS = normalize(vec3(0.0, 0.0, 1.0) + vec3((fb.x < 0.05 ? -0.6 : fb.x > 0.95 ? 0.6 : 0.0), (fb.y < 0.12 ? -0.6 : fb.y > 0.88 ? 0.6 : 0.0), 0.0) * mortar * (1.0 - aa));
     f.rough = 0.85;
   } else if (wallType == 3) { // metal cladding, ribs every 0.3 m
     float t = fract(uv.x / 0.3);
-    float rib = smoothstep(0.0, 0.08, t) * (1.0 - smoothstep(0.16, 0.24, t));
-    f.nTS = normalize(vec3((t < 0.08 ? 1.2 : (t > 0.16 && t < 0.24) ? -1.2 : 0.0), 0.0, 1.0));
+    float aa = smoothstep(0.12, 0.4, fwidth(uv.x / 0.3));
+    float rib = mix(smoothstep(0.0, 0.08, t) * (1.0 - smoothstep(0.16, 0.24, t)), 0.2, aa);
+    f.nTS = normalize(vec3((t < 0.08 ? 1.2 : (t > 0.16 && t < 0.24) ? -1.2 : 0.0) * (1.0 - aa), 0.0, 1.0));
     f.albedo *= 0.92 + 0.08 * rib - 0.05 * grain;
     // Rust/dirt streaks.
     f.albedo *= 1.0 - 0.12 * smoothstep(0.55, 0.9, bn(vec2(uv.x * 3.0, uv.y * 0.3) + seed));
@@ -143,16 +149,19 @@ Fac facade(vec3 V) {
     f.rough = 0.4;
   } else if (wallType == 4) { // board and batten
     float t = fract(uv.x / 0.3);
-    float batten = step(0.88, t);
-    f.nTS = normalize(vec3(t > 0.86 && t < 0.88 ? -1.5 : (t > 0.98 ? 1.5 : 0.0), 0.0, 1.0));
+    float aa = smoothstep(0.12, 0.4, fwidth(uv.x / 0.3));
+    float batten = mix(step(0.88, t), 0.12, aa);
+    f.nTS = normalize(vec3((t > 0.86 && t < 0.88 ? -1.5 : (t > 0.98 ? 1.5 : 0.0)) * (1.0 - aa), 0.0, 1.0));
     f.albedo *= (0.85 + 0.25 * bn(vec2(uv.x * 40.0, uv.y * 1.5))) * (1.0 - 0.1 * batten);
     f.rough = 0.8;
   } else { // concrete block
     vec2 b = uv / vec2(0.4, 0.2);
     b.x += mod(floor(b.y), 2.0) * 0.5;
     vec2 fb = fract(b);
-    float joint = 1.0 - step(0.02, fb.x) * step(fb.y, 0.96);
-    f.albedo *= (0.9 + 0.12 * bh(floor(b) + seed)) * mix(1.0, 0.8, joint);
+    vec2 fw = fwidth(b);
+    float aa = smoothstep(0.15, 0.5, max(fw.x, fw.y));
+    float joint = mix(1.0 - step(0.02, fb.x) * step(fb.y, 0.96), 0.06, aa);
+    f.albedo *= mix(0.9 + 0.12 * bh(floor(b) + seed), 0.96, aa) * mix(1.0, 0.8, joint);
     f.rough = 0.9;
   }
   // Grime near the ground and under the eaves.
@@ -319,19 +328,22 @@ RoofS roofSurface() {
     float fx = fract(x);
     float slot = 1.0 - smoothstep(0.0, 0.02, fx) * smoothstep(1.0, 0.98, fx);
     float jitter = bh(vec2(col, row) + seed);
-    r.albedo = base * (0.82 + 0.3 * jitter) * (0.9 + 0.2 * bn(uv * 30.0));
+    // Fade courses and tabs to their average when they shrink to a few pixels (no moire).
+    float aa = smoothstep(0.12, 0.45, fwidth(uv.y / 0.143));
+    r.albedo = base * mix((0.82 + 0.3 * jitter) * (0.9 + 0.2 * bn(uv * 30.0)), 0.97, aa);
     // Butt edge shadow at the bottom of each course (fall line increases downslope).
-    float butt = smoothstep(0.82, 1.0, fy);
-    r.albedo *= 1.0 - 0.35 * butt - 0.3 * slot;
-    r.nTS = normalize(vec3(0.0, mix(-0.15, 1.2, butt), 1.0));
+    float butt = mix(smoothstep(0.82, 1.0, fy), 0.1, aa);
+    r.albedo *= 1.0 - 0.35 * butt - 0.3 * mix(slot, 0.03, aa);
+    r.nTS = normalize(vec3(0.0, mix(mix(-0.15, 1.2, butt), 0.0, aa), 1.0));
     // Algae / weathering streaks.
     r.albedo *= 1.0 - 0.15 * smoothstep(0.6, 0.95, bn(vec2(uv.x * 0.8, uv.y * 0.15) + seed * 7.0));
     r.rough = 0.92;
   } else if (type == 1) {
     // Standing seam metal: seams every 0.43 m across the slope.
     float t = fract(uv.x / 0.43);
-    float seam = 1.0 - smoothstep(0.0, 0.025, t) * smoothstep(1.0, 0.975, t);
-    r.nTS = normalize(vec3((t < 0.025 ? 1.5 : t > 0.975 ? -1.5 : (bn(uv * vec2(3.0, 0.7)) - 0.5) * 0.08), 0.0, 1.0));
+    float aa = smoothstep(0.12, 0.4, fwidth(uv.x / 0.43));
+    float seam = mix(1.0 - smoothstep(0.0, 0.025, t) * smoothstep(1.0, 0.975, t), 0.05, aa);
+    r.nTS = normalize(vec3((t < 0.025 ? 1.5 : t > 0.975 ? -1.5 : (bn(uv * vec2(3.0, 0.7)) - 0.5) * 0.08) * (1.0 - aa), 0.0, 1.0));
     r.albedo = base * (0.95 + 0.05 * bn(uv * 2.0)) * (1.0 - 0.08 * seam);
     r.metal = 0.7;
     r.rough = 0.35 + 0.2 * bn(uv * 0.5 + seed);
