@@ -1,0 +1,41 @@
+{
+  "name": "chetwynd-map",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Walkable photoreal 3D map of Chetwynd, British Columbia, built from open LiDAR and map data.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "e2e": "node e2e/run.mjs",
+    "check": "npm run typecheck && npm run lint && npm test && npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.21.0",
+    "earcut": "^3.2.3",
+    "straight-skeleton": "^3.0.0",
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/earcut": "^3.0.0",
+    "@types/node": "^24.19.0",
+    "@types/three": "^0.186.0",
+    "eslint": "^10.11.0",
+    "globals": "^17.12.0",
+    "ktx2-encoder": "^0.6.0",
+    "playwright-core": "^1.63.0",
+    "sharp": "^0.35.4",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.70.1",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2"
+  }
+}

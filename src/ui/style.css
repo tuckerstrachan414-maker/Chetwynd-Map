@@ -1,0 +1,43 @@
+:root {
+  --ui-bg: rgba(12, 16, 14, 0.72);
+  --ui-fg: #eef2ea;
+  --ui-muted: #a9b3a4;
+  --ui-accent: #e2b04a;
+  --ui-line: rgba(255, 255, 255, 0.14);
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0f0d; color: var(--ui-fg); }
+#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; outline: none; }
+#ui { position: fixed; inset: 0; pointer-events: none; }
+#ui > * { pointer-events: auto; }
+/* Full-screen overlays must let clicks through to the 3D view (only their cards and panels take clicks). */
+#ui > .hud, #ui > .osd { pointer-events: none; }
+.hud { position: fixed; inset: 0; pointer-events: none; font-size: 13px; }
+.hud.hidden, .hud .hidden { display: none !important; }
+.hud-cross { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: rgba(255,255,255,0.75); box-shadow: 0 0 2px rgba(0,0,0,0.6); }
+.hud-mode { position: absolute; left: 16px; top: 14px; padding: 4px 10px; border-radius: 4px; background: var(--ui-bg); color: var(--ui-accent); letter-spacing: 0.12em; font-weight: 600; }
+.hud-status { position: absolute; right: 16px; top: 14px; padding: 4px 10px; border-radius: 4px; background: var(--ui-bg); color: var(--ui-muted); font-variant-numeric: tabular-nums; }
+.hud-help { position: absolute; left: 16px; bottom: 16px; max-width: min(92vw, 720px); padding: 8px 12px; border-radius: 6px; background: var(--ui-bg); line-height: 1.6; }
+.hud-start { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: auto; cursor: pointer; background: radial-gradient(ellipse at center, rgba(0,0,0,0.15), rgba(0,0,0,0.55)); text-align: center; }
+.hud-start h1 { margin: 0 0 6px; font-size: clamp(28px, 6vw, 56px); font-weight: 700; letter-spacing: 0.02em; text-shadow: 0 2px 12px rgba(0,0,0,0.5); }
+.hud-start p { margin: 0 0 10px; font-size: 18px; color: var(--ui-accent); }
+.hud-start small { color: var(--ui-muted); }
+.hud-start.loading { cursor: progress; }
+.hud-start .start-bar { width: min(320px, 70vw); height: 4px; margin: 0 auto 14px; border-radius: 2px; background: rgba(255,255,255,0.15); overflow: hidden; }
+.hud-start .start-bar i { display: block; height: 100%; width: 0; background: var(--ui-accent); transition: width 0.3s; }
+.hud-start:not(.loading) .start-bar { visibility: hidden; }
+.hud-start.nudge .start-msg { animation: cwnudge 0.4s; }
+.hud-start.resume { background: rgba(0,0,0,0.3); }
+.hud-start.resume h1 { font-size: clamp(22px, 3.5vw, 34px); }
+.hud-start.resume small { display: none; }
+.hud-hint { position: absolute; left: 50%; top: calc(50% + 22px); transform: translateX(-50%); padding: 4px 10px; border-radius: 4px;
+  background: var(--ui-bg); color: var(--ui-muted); white-space: nowrap; }
+@keyframes cwnudge { 25% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
+.hud-error { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); width: min(560px, calc(100vw - 32px)); padding: 12px 16px;
+  border-radius: 8px; background: rgba(120, 20, 20, 0.92); color: #fff; font-size: 14px; line-height: 1.4; pointer-events: auto; z-index: 40; }
+.hud-error .msg { font-family: monospace; font-size: 12px; margin: 6px 0; white-space: pre-wrap; word-break: break-word; }
+
+.hud-tip { position: absolute; left: 50%; top: calc(50% + 28px); transform: translateX(-50%); max-width: 360px; padding: 8px 12px;
+  border-radius: 6px; background: var(--ui-bg); color: var(--ui-fg, #eee); font-size: 13px; line-height: 1.35; text-align: center; }
+.hud-tip b { display: block; font-size: 15px; margin-bottom: 2px; }
