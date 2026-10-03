@@ -1,11 +1,13 @@
 import * as THREE from 'three';
+import { SunLight } from 'three/examples/jsm/lights/SunLight.js';
+import { CascadedSunShadow, type CascadeSettings } from '../engine/CascadedShadows';
 import type { Post } from '../engine/Post';
 import type { FrameProfiler } from '../engine/FrameProfiler';
-import { CulledInstances, CullView } from '../world/InstanceCull';
+import { CulledInstances, CullView, ShadowCasterCull } from '../world/InstanceCull';
 import { Atmosphere } from '../engine/sky/Atmosphere';
 import { SkyEnvironment } from '../engine/sky/SkyEnvironment';
 import { loadKtx2Array } from '../engine/textures/TextureArrays';
-import { LightField, worldLightUniforms } from '../engine/WorldLight';
+import { CloudShadowMap, LightField, worldLightUniforms } from '../engine/WorldLight';
 import { ChunkManager } from '../world/ChunkManager';
 import { buildingUniforms, createFacadeMaterial, createRoofMaterial, createTrimMaterial } from '../world/buildings/BuildingMaterials';
 import { Carvings } from '../world/props/Carvings';
@@ -65,10 +67,14 @@ export type Season = (typeof SEASONS)[number];
 /** All world content and environment state: terrain, buildings, roads, forest, sky and sun. */
 export class World {
   readonly sky = new SkyState();
-  readonly sun = new THREE.DirectionalLight(0xffffff, 1);
+  /** The sun (or moon): direction from its position, cascaded shadows (see CascadedSunShadow). */
+  readonly sun = new SunLight(0xffffff, 1);
+  readonly csm = new CascadedSunShadow();
   readonly weather = new Weather();
   readonly overrides = new Overrides();
   readonly leaves = new FallingLeaves();
+  /** Cloud shadows baked to a texture (see CloudShadowMap). */
+  readonly cloudShadows = new CloudShadowMap();
   lightField!: LightField;
   private lastTime = -1;
   store!: TerrainStore;
@@ -97,7 +103,9 @@ export class World {
   constructor(
     private readonly renderer: THREE.WebGLRenderer,
     readonly scene: THREE.Scene,
-  ) {}
+  ) {
+    (this.sun as unknown as { shadow: THREE.LightShadow }).shadow = this.csm;
+  }
 
   async init(opts: { chunkRadius?: number; onProgress?: (label: string, frac: number) => void }): Promise<void> {
     // Report a step, then give the browser a frame to paint the loading bar before heavy work.
@@ -207,34 +215,65 @@ export class World {
     this.waterRestore.layers.set(WATER_LAYER);
     this.scene.add(this.waterRestore);
 
-    // The shadow pass draws the near trees whose shadows reach the view, the camera only those in it.
-    const sm = this.renderer.shadowMap as unknown as { render: (...a: unknown[]) => void };
-    const shadowRender = sm.render.bind(this.renderer.shadowMap);
-    sm.render = (...a: unknown[]) => {
+    // The sun's cascaded shadow pass. Only the cascades due this frame are drawn (CascadedSunShadow):
+    // the renderer walks their atlas tiles, clears just those (stale tiles keep their depth), with
+    // colour writes masked off (only depth is read). Instanced casters, the terrain and other
+    // streamed content draw per cascade only what can cast into that cascade's slice.
+    const r = this.renderer;
+    const csm = this.csm;
+    const sm = r.shadowMap as unknown as { render: (lights: THREE.Light[], scene: THREE.Scene, camera: THREE.Camera) => void };
+    const shadowRender = sm.render.bind(r.shadowMap);
+    const reversed = r.state.buffers.depth.getReversed();
+    const clearDue = () => csm.clearDue(r);
+    // Per-cascade caster sets (trees, props, terrain) are shown only while their own tile is drawn.
+    csm.onCascade = (c) => {
+      CulledInstances.showCascade(c);
+      this.terrain.showCascade(c);
+    };
+    sm.render = (lights, scene, camera) => {
+      if (!lights.length || (!r.shadowMap.autoUpdate && !r.shadowMap.needsUpdate)) {
+        shadowRender(lights, scene, camera);
+        return;
+      }
+      // No tile is due: every cascade keeps last frame's depth.
+      if (!csm.due.length) return;
+      csm.ensureMap(reversed);
+      csm.rendering = true;
+      const clear = r.clear;
+      r.clear = clearDue;
+      const color = r.state.buffers.color;
+      color.setMask(false);
+      color.setLocked(true);
       CulledInstances.beginShadowPass();
-      this.terrain.shadowMesh.visible = true;
+      this.terrain.beginShadowPass();
+      this.shadowCasters.begin(this.cullView);
       try {
-        shadowRender(...a);
+        shadowRender(lights, scene, camera);
       } finally {
+        color.setLocked(false);
+        color.setMask(true);
+        r.clear = clear;
+        csm.rendering = false;
         CulledInstances.endShadowPass();
-        this.terrain.shadowMesh.visible = false;
+        this.terrain.endShadowPass();
+        this.shadowCasters.end();
       }
     };
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(4096, 4096);
-    const sc = this.sun.shadow.camera;
-    sc.left = -160;
-    sc.right = 160;
-    sc.top = 160;
-    sc.bottom = -160;
-    sc.near = 1;
-    sc.far = 4000;
-    sc.updateProjectionMatrix();
-    const reversed = this.renderer.state.buffers.depth.getReversed();
-    this.sun.shadow.bias = reversed ? 0.0003 : -0.0003;
-    this.sun.shadow.normalBias = 0.6;
-    this.scene.add(this.sun, this.sun.target);
+    this.sun.shadow.normalBias = 1;
+    this.shadowCasters.add(this.chunks.root, this.roads.root, this.fences.root, this.carvings.root);
+    this.scene.add(this.sun);
   }
+
+  /** Shadow cascades for a quality level (tile size, reach, refresh intervals). */
+  setShadowQuality(s: CascadeSettings): void {
+    this.csm.configure(s);
+    // Cascades with texels coarser than ~12 cm draw trees without wind (see TreeMaterials.depthBegin).
+    vegUniforms.uShadowWindMin.value = 2 / (0.12 * s.size);
+  }
+
+  /** Static shadow casters (buildings, roads, fences, carvings) outside the view's shadow reach skip the shadow pass. */
+  private readonly shadowCasters = new ShadowCasterCull();
 
   get ready(): boolean {
     const c = this.complete;
@@ -276,6 +315,7 @@ export class World {
     worldLightUniforms.uCloudGlow.value.set(1.0, 0.64, 0.38).multiplyScalar(0.00035 * this.sky.night * wx.cover);
     const altKm = Math.max(camera.position.y / 1000, 0.01);
     this.sky.update(altKm, this.atmosphere.haze.value);
+    this.cloudShadows.update(this.renderer, camera.position);
     this.atmosphere.update(this.renderer, camera, this.sky.sunDir, this.sky.moonDir, this.sky.lightDir);
     const cu = post.composite.uniforms;
     (cu.uSunDir.value as THREE.Vector3).copy(this.sky.sunDir);
@@ -287,22 +327,26 @@ export class World {
     if (this.skyEnv.update(this.sky.sunDir, this.sky.moonDir, SUN_E, this.sky.moonE, altKm)) {
       this.scene.environment = this.skyEnv.texture;
     }
-    // Sun/moon light with a shadow frustum snapped to texels around the camera.
-    const cam = camera.position;
+    // Sun/moon light: direction from its position; the cascades fit themselves to this frame's view.
     this.sun.color.copy(this.sky.lightColor);
     this.sun.intensity = 1;
-    const texel = (this.sun.shadow.camera.right * 2) / this.sun.shadow.mapSize.x;
-    this.sun.target.position.set(Math.round(cam.x / texel) * texel, cam.y, Math.round(cam.z / texel) * texel);
-    this.sun.position.copy(this.sun.target.position).addScaledVector(this.sky.lightDir, 2000);
-    this.sun.target.updateMatrixWorld();
+    this.sun.position.copy(this.sky.lightDir);
+    this.sun.updateMatrixWorld();
+    const reversed = this.renderer.state.buffers.depth.getReversed();
+    this.csm.prepare(camera, this.sky.lightDir, reversed);
+    this.sun.shadow.bias = this.csm.depthBias(0.05, reversed);
+    vegUniforms.uEye.value.copy(camera.position);
+    const cam = camera.position;
+    this.lastCam.copy(cam);
+    // The camera's view for per-instance culling and strict shadow-caster culling (trees, props, terrain).
+    this.cullView.update(camera, this.sky.lightDir, this.csm.reach, this.csm.settings.maxDistance, post.projection(camera));
+    this.cullView.setCascades(this.csm.frustums, this.csm.due);
 
     pr?.gpuStop();
     pr?.end('sky');
     pr?.begin('terrain');
-    // This frame's sun shadow volume (the renderer recomputes the same matrices for the shadow pass).
-    this.sun.updateMatrixWorld();
-    this.sun.shadow.updateMatrices(this.sun);
-    this.terrain.update(camera, this.sun.shadow.getFrustum());
+    this.terrain.setRenderHeight(post.renderHeight);
+    this.terrain.update(camera, this.csm, this.cullView);
     this.complete.terrain = this.terrain.complete;
     pr?.end('terrain');
     pr?.begin('buildings');
@@ -310,7 +354,6 @@ export class World {
     pr?.end('buildings');
     pr?.begin('trees');
     this.complete.forest = this.forest.update(cam);
-    this.cullView.update(camera, this.sky.lightDir);
     this.forest.cull(this.cullView);
     pr?.end('trees');
     pr?.begin('grass');
@@ -322,7 +365,7 @@ export class World {
     pr?.end('props');
     propUniforms.uNight.value = this.sky.night;
     propUniforms.uTime.value = time;
-    propUniforms.uPxAngle.value = (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / Math.max(post.pixelHeight, 1);
+    propUniforms.uPxAngle.value = (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / Math.max(post.renderHeight, 1);
     // Photocells switch the street lights on at dusk, together with the lens glow.
     pr?.begin('lights');
     pr?.gpu('lights');
@@ -338,7 +381,8 @@ export class World {
     (lu.uAmb.value as THREE.Color).copy(this.sky.lightColor).multiplyScalar(0.05 + 0.1 * Math.max(this.sky.lightDir.y, 0));
     (lu.uWind.value as THREE.Vector2).copy(this.weather.wind);
     pr?.begin('leaves');
-    this.leaves.update(cam, time, season === 1 || season === 0, () => this.forest.deciduousNear(cam.x, cam.z, 45, season));
+    this.leafSeason = season;
+    this.leaves.update(cam, time, season === 1 || season === 0, this.leafSource);
     pr?.end('leaves');
     pr?.begin('roads');
     this.complete.roads = this.roads.update(cam);
@@ -368,13 +412,14 @@ export class World {
       (cu.uUnderSigma.value as THREE.Vector3).set(0.62 * turbid, 0.3 * turbid, 0.38 * turbid);
     }
     post.secondPass = this.water.inView(camera);
-    (this.waterRestore.material as THREE.ShaderMaterial).uniforms.tSrc.value = post.refrColor.texture;
-    u.tRefr.value = post.refrColor.texture;
-    u.tDepthC.value = post.refrDepth.texture;
+    this.waterRestore.visible = post.restoreColor;
+    (this.waterRestore.material as THREE.ShaderMaterial).uniforms.tSrc.value = post.refrTexture;
+    u.tRefr.value = post.refrTexture;
+    u.tDepthC.value = post.refrDepthTexture;
     (u.uProj.value as THREE.Matrix4).copy(camera.projectionMatrix);
     (u.uInvProj.value as THREE.Matrix4).copy(camera.projectionMatrixInverse);
     (u.uCamWorld.value as THREE.Matrix4).copy(camera.matrixWorld);
-    (u.uResolution.value as THREE.Vector2).set(post.pixelWidth, post.pixelHeight);
+    (u.uResolution.value as THREE.Vector2).set(post.renderWidth, post.renderHeight);
     u.uReversed.value = post.reversed ? 1 : 0;
     u.uTime.value = time;
     u.uViewAltKm.value = Math.max(camera.position.y / 1000, 0.01);
@@ -384,13 +429,25 @@ export class World {
     u.uMoonE.value = this.sky.moonE;
     (u.uLightDir.value as THREE.Vector3).copy(this.sky.lightDir);
     (u.uLightColor.value as THREE.Color).copy(this.sky.lightColor);
-    const sm = this.sun.shadow.map;
+    const sm = this.csm.map;
     if (sm?.depthTexture) {
       u.uShadowMap.value = sm.depthTexture;
       u.uShadowOn.value = 1;
     }
-    u.uShadowMatrix.value = this.sun.shadow.matrix;
+    u.uCsmMatrix.value = this.csm.matrices;
+    u.uCsmData.value = this.csm._cascadeData;
+    u.uShadowTexel.value = 1 / (this.csm.mapSize.x * 2);
+    u.uShadowBias.value = this.sun.shadow.bias;
   }
+
+  /** Falling-leaf source trees around the camera (bound once: no closure per frame). */
+  private leafSeason = 0;
+  private readonly leafSource = (out: Float32Array, radius: number, max: number) =>
+    this.forest.deciduousNear(this.lastCam.x, this.lastCam.z, radius, this.leafSeason, out, max);
+  private readonly lastCam = new THREE.Vector3();
+  private readonly hf = new THREE.Vector3();
+  private readonly hu = new THREE.Vector3();
+  private readonly hr = new THREE.Vector3();
 
   /** Vehicle low beams from a chassis (+X forward); pass null to switch them off. */
   setHeadlights(root: THREE.Object3D | null, night: number): void {
@@ -401,10 +458,10 @@ export class World {
     }
     root.updateMatrixWorld();
     const e = root.matrixWorld.elements;
-    const f = new THREE.Vector3(e[0], e[1], e[2]).normalize();
-    const up = new THREE.Vector3(e[4], e[5], e[6]).normalize();
-    const right = new THREE.Vector3(e[8], e[9], e[10]).normalize();
-    u.uHeadPos.value.copy(new THREE.Vector3(2.95, 0.12, 0).applyMatrix4(root.matrixWorld));
+    const f = this.hf.set(e[0], e[1], e[2]).normalize();
+    const up = this.hu.set(e[4], e[5], e[6]).normalize();
+    const right = this.hr.set(e[8], e[9], e[10]).normalize();
+    u.uHeadPos.value.set(2.95, 0.12, 0).applyMatrix4(root.matrixWorld);
     u.uHeadMat.value.set(f.x, f.y, f.z, up.x, up.y, up.z, right.x, right.y, right.z);
     u.uHeadK.value = THREE.MathUtils.smoothstep(night, 0.15, 0.55) + (this.weather.kind === 'fog' || this.weather.kind === 'rain' || this.weather.kind === 'snow' ? 0.35 : 0);
   }

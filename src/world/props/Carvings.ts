@@ -308,6 +308,8 @@ function build(c: Carving): G {
 
 export class Carvings {
   readonly root = new THREE.Group();
+  private readonly fwd = new THREE.Vector3();
+  private readonly dir = new THREE.Vector3();
   list: Carving[] = [];
   private readonly material: THREE.MeshStandardMaterial;
 
@@ -364,11 +366,11 @@ export class Carvings {
   /** The carving the camera is looking at (within 12 m, near the view centre), if any. */
   lookedAt(cam: THREE.Camera): Carving | null {
     const p = cam.position;
-    const f = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion);
+    const f = this.fwd.set(0, 0, -1).applyQuaternion(cam.quaternion);
     let best: Carving | null = null;
     let bestScore = 0.93;
     for (const c of this.list) {
-      const d = new THREE.Vector3(c.x - p.x, c.y + 1.2 - p.y, c.z - p.z);
+      const d = this.dir.set(c.x - p.x, c.y + 1.2 - p.y, c.z - p.z);
       const L = d.length();
       if (L > 12) continue;
       const dot = d.divideScalar(L).dot(f);

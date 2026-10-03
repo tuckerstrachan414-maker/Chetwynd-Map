@@ -15,6 +15,8 @@ export interface MeshPart {
   wind: Float32Array;
   ao: Float32Array;
   idx: Uint32Array;
+  /** Indices (from the start) that cast shadows, when not all of them do. */
+  shadowIdx?: number;
 }
 
 export interface TreeModel {
@@ -34,6 +36,8 @@ class Builder {
   wind: number[] = [];
   ao: number[] = [];
   idx: number[] = [];
+  /** Indices that cast shadows (set when only a leading part should). */
+  shadowIdx: number | undefined;
   vert(p: V3, n: V3, u: number, v: number, w: [number, number, number, number], ao: number): number {
     this.pos.push(p[0], p[1], p[2]);
     this.nrm.push(n[0], n[1], n[2]);
@@ -50,6 +54,7 @@ class Builder {
       wind: new Float32Array(this.wind),
       ao: new Float32Array(this.ao),
       idx: new Uint32Array(this.idx),
+      shadowIdx: this.shadowIdx,
     };
   }
 }
@@ -159,6 +164,9 @@ function conifer(arch: Archetype, seed: number, p: Params, lod: 0 | 1): { bark: 
     trunkR.push(Math.max(0.02, r0 * (1 - 0.92 * t) * (k === 0 ? 1.35 : 1)));
   }
   tube(bark, trunkPts, trunkR, lod === 0 ? 7 : 5, (k) => (k / segs) ** 2 * 0.15, 0, 0.5);
+  // A conifer's branches stay hidden inside its needle sprays: only the trunk casts a shadow of its own
+  // (half the triangles of a spruce's shadow; the sprays cast the crown's).
+  bark.shadowIdx = bark.idx.length;
   const axisAt = (y: number): V3 => {
     const t = y / H;
     return [lean[0] * t * t, y, lean[2] * t * t];

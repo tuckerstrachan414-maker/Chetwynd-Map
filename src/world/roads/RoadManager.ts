@@ -58,14 +58,19 @@ const roadFragMain = /* glsl */ `
     // Asphalt ageing: large-scale tone, cracks, tar snakes, patches, wheel paths, edge crumble.
     float age = rfbm(vRWPos.xz * 0.02);
     col *= 0.78 + 0.35 * age;
-    float cr = cracks(vRWPos.xz * 0.35 + rfbm(vRWPos.xz * 0.2) * 1.5);
-    float crackLine = 1.0 - smoothstep(0.0, 0.035, cr);
-    float crackMask = smoothstep(0.55, 0.75, rfbm(vRWPos.xz * 0.05 + 3.0));
-    col *= 1.0 - 0.55 * crackLine * crackMask;
-    // Tar sealant (shiny black) along some cracks.
-    float tar = (1.0 - smoothstep(0.0, 0.09, cr)) * smoothstep(0.62, 0.8, rfbm(vRWPos.xz * 0.04 + 9.0));
-    col = mix(col, vec3(0.015), tar * 0.9);
-    rough = mix(rough, 0.35, tar);
+    // Cracks and tar snakes are centimetres wide: past ~70 m they are under a pixel and would only
+    // shimmer, so they fade out there and their noise (a Voronoi and three fbm) is not evaluated.
+    float crackK = 1.0 - smoothstep(45.0, 70.0, length(vRWPos - cameraPosition));
+    if (crackK > 0.0) {
+      float cr = cracks(vRWPos.xz * 0.35 + rfbm(vRWPos.xz * 0.2) * 1.5);
+      float crackLine = 1.0 - smoothstep(0.0, 0.035, cr);
+      float crackMask = smoothstep(0.55, 0.75, rfbm(vRWPos.xz * 0.05 + 3.0));
+      col *= 1.0 - 0.55 * crackLine * crackMask * crackK;
+      // Tar sealant (shiny black) along some cracks.
+      float tar = (1.0 - smoothstep(0.0, 0.09, cr)) * smoothstep(0.62, 0.8, rfbm(vRWPos.xz * 0.04 + 9.0)) * crackK;
+      col = mix(col, vec3(0.015), tar * 0.9);
+      rough = mix(rough, 0.35, tar);
+    }
     // Rectangular patches.
     vec2 pc = floor(vRWPos.xz / 7.0);
     if (rh(pc) > 0.93) {

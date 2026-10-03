@@ -8,7 +8,13 @@ export interface QualitySettings {
   scale: number;
   msaa: number;
   fxaa: boolean;
+  /** Temporal anti-aliasing instead of MSAA (see Post). */
+  taa: boolean;
+  /** Resolution of one sun shadow cascade tile (four tiles in a 2x2 atlas). */
   shadowMap: number;
+  /** How far sun shadows reach from the eye (m), and each cascade's refresh interval in frames. */
+  shadowDistance: number;
+  shadowInterval: readonly number[];
   ao: boolean;
   ssr: boolean;
   /** Grass density (1 = full). */
@@ -19,15 +25,30 @@ export interface QualitySettings {
   shrubs: number;
   /** Building chunk streaming radius (m). */
   chunks: number;
-  /** Target frame time for dynamic resolution (ms); 0 disables it. */
+  /**
+   * Target frame time for dynamic resolution (ms); 0 disables it. With TAA the scene's render size
+   * drops below the output and the TAA resolve upsamples (the output stays at full resolution).
+   */
   targetMs: number;
 }
 
 export const QUALITY: Record<QualityLevel, QualitySettings> = {
-  low: { scale: 0.7, msaa: 0, fxaa: true, shadowMap: 2048, ao: false, ssr: false, grass: 0.35, treeNear: 90, treeLod0: 22, shrubs: 60, chunks: 800, targetMs: 33 },
-  medium: { scale: 0.85, msaa: 2, fxaa: false, shadowMap: 2048, ao: true, ssr: false, grass: 0.6, treeNear: 120, treeLod0: 30, shrubs: 85, chunks: 1100, targetMs: 16.7 },
-  high: { scale: 1, msaa: 4, fxaa: false, shadowMap: 4096, ao: true, ssr: true, grass: 1, treeNear: 150, treeLod0: 40, shrubs: 110, chunks: 1600, targetMs: 16.7 },
-  ultra: { scale: 1, msaa: 4, fxaa: false, shadowMap: 4096, ao: true, ssr: true, grass: 1.35, treeNear: 210, treeLod0: 60, shrubs: 150, chunks: 2200, targetMs: 0 },
+  low: {
+    scale: 0.7, msaa: 0, fxaa: true, taa: false, shadowMap: 1024, shadowDistance: 220, shadowInterval: [1, 2, 4, 8], ao: false, ssr: false,
+    grass: 0.35, treeNear: 90, treeLod0: 22, shrubs: 60, chunks: 800, targetMs: 33,
+  },
+  medium: {
+    scale: 0.85, msaa: 2, fxaa: false, taa: false, shadowMap: 1024, shadowDistance: 320, shadowInterval: [1, 1, 2, 4], ao: true, ssr: false,
+    grass: 0.6, treeNear: 120, treeLod0: 30, shrubs: 85, chunks: 1100, targetMs: 16.7,
+  },
+  high: {
+    scale: 1, msaa: 0, fxaa: false, taa: true, shadowMap: 2048, shadowDistance: 450, shadowInterval: [1, 2, 4, 8], ao: true, ssr: true,
+    grass: 1, treeNear: 150, treeLod0: 40, shrubs: 110, chunks: 1600, targetMs: 16.7,
+  },
+  ultra: {
+    scale: 1, msaa: 0, fxaa: false, taa: true, shadowMap: 2048, shadowDistance: 600, shadowInterval: [1, 2, 4, 8], ao: true, ssr: true,
+    grass: 1.35, treeNear: 210, treeLod0: 60, shrubs: 150, chunks: 2200, targetMs: 33.3,
+  },
 };
 
 const LS_KEY = 'cw.quality';
@@ -67,14 +88,15 @@ export function gpuName(renderer: THREE.WebGLRenderer): string {
 }
 
 /**
- * Dynamic resolution: nudges the render scale (0.55..1) to keep the smoothed GPU-bound frame time
- * near the target. Changes are small and at most every 1.5 s, so the image does not pump.
+ * Dynamic resolution: nudges the render scale (`minScale`..1) to keep the smoothed GPU-bound frame time
+ * at or just under the target (it steps down once the average runs 2 % over the target, back up below 82 % of
+ * it). Changes are small and at most every 1.5 s, so the image does not pump.
  */
 export class DynamicResolution {
   scale = 1;
   private avg = 16.7;
   private cooldown = 2;
-  constructor(public targetMs: number, public maxScale = 1) {
+  constructor(public targetMs: number, public maxScale = 1, public minScale = 0.55) {
     this.scale = maxScale;
   }
 
@@ -86,8 +108,8 @@ export class DynamicResolution {
     if (this.cooldown > 0) return false;
     let next = this.scale;
     // Steps are rounded to hundredths so repeated changes land exactly on the limits.
-    if (this.avg > this.targetMs * 1.12) next = Math.max(0.55, Math.round((this.scale - 0.05) * 100) / 100);
-    else if (this.avg < this.targetMs * 0.78) next = Math.min(this.maxScale, Math.round((this.scale + 0.05) * 100) / 100);
+    if (this.avg > this.targetMs * 1.02) next = Math.max(this.minScale, Math.round((this.scale - 0.05) * 100) / 100);
+    else if (this.avg < this.targetMs * 0.82) next = Math.min(this.maxScale, Math.round((this.scale + 0.05) * 100) / 100);
     if (next === this.scale) return false;
     this.scale = next;
     this.cooldown = 1.5;

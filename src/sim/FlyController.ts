@@ -7,6 +7,7 @@ export class FlyController {
   speed = 12;
   private readonly keys = new Set<string>();
   private readonly euler = new THREE.Euler(0, 0, 0, 'YXZ');
+  private readonly move = new THREE.Vector3();
   enabled = true;
   /** Look by dragging with the right mouse button instead of pointer lock (editor, photo mode). */
   dragLook = false;
@@ -39,7 +40,7 @@ export class FlyController {
     this.euler.set(this.pitch, this.yaw, 0);
     this.camera.quaternion.setFromEuler(this.euler);
     if (!this.enabled) return;
-    const v = new THREE.Vector3();
+    const v = this.move.set(0, 0, 0);
     if (this.keys.has('KeyW')) v.z -= 1;
     if (this.keys.has('KeyS')) v.z += 1;
     if (this.keys.has('KeyA')) v.x -= 1;

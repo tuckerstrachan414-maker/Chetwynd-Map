@@ -25,6 +25,9 @@ export const worldLightUniforms = {
   uHeadPos: { value: new THREE.Vector3() },
   uHeadMat: { value: new THREE.Matrix3() },
   uHeadK: { value: 0 },
+  /** Cloud-deck density baked over a window of cloud space (see CloudShadowMap): origin x, z and size (m). */
+  uCloudShadowTex: { value: null as THREE.Texture | null },
+  uCloudShadowBox: { value: new THREE.Vector3(0, 0, 1) },
 };
 
 /** Shared cloud uniforms and density (also used by the sky composite, sky probe and water). World units: metres. */
@@ -34,6 +37,8 @@ uniform float uCloudCover;
 uniform vec2 uCloudOffset;
 uniform float uCloudShadowK;
 uniform vec3 uCloudSunDir;
+uniform sampler2D uCloudShadowTex;
+uniform vec3 uCloudShadowBox;
 float cwcHash(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 float cwcNoise(vec2 p) {
   vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
@@ -54,11 +59,12 @@ float cloudDensity(vec2 xz, float cover, vec2 offset) {
   float thr = mix(0.78, 0.2, cover);
   return clamp((d - thr) / 0.18, 0.0, 1.0);
 }
-// Direct-light factor at a world point: where the ray towards the sun (or moon) meets the deck.
+// Direct-light factor at a world point: where the ray towards the sun (or moon) meets the deck. The
+// deck's density comes from the baked map (one filtered read instead of two five-octave noises).
 float cloudShadow(vec3 wpos) {
   if (uCloudShadowK <= 0.0 || uCloudSunDir.y <= 0.05) return 1.0;
   vec2 cp = wpos.xz + uCloudSunDir.xz / uCloudSunDir.y * (${CLOUD_BASE.toFixed(1)} - wpos.y);
-  float cs = cloudDensity(cp, uCloudCover, uCloudOffset);
+  float cs = texture2D(uCloudShadowTex, (cp + uCloudOffset - uCloudShadowBox.xy) / uCloudShadowBox.z).r;
   return 1.0 - uCloudShadowK * smoothstep(0.05, 0.6, cs);
 }
 `;
@@ -320,5 +326,86 @@ export class LightField {
     renderer.shadowMap.autoUpdate = autoShadow;
     renderer.setRenderTarget(prevTarget);
     renderer.setClearColor(prevClear, prevAlpha);
+  }
+}
+
+/**
+ * Cloud shadows as a texture. The deck's density is a fixed pattern in "cloud space" (world x, z plus
+ * the wind offset) for a given coverage, so it is baked once over a 16 km window around where the
+ * camera's sun ray meets the deck, and lit materials sample it with the current offset. The window is
+ * redrawn only when that point drifts a quarter of the way out (wind, travel, the sun moving) or the
+ * coverage changes (weather transitions), not every frame.
+ */
+export class CloudShadowMap {
+  readonly target: THREE.WebGLRenderTarget;
+  private readonly scene = new THREE.Scene();
+  private readonly cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  private readonly material: THREE.ShaderMaterial;
+  private readonly size = 16000;
+  private readonly centre = new THREE.Vector2(1e9, 1e9);
+  private cover = -1;
+
+  constructor(res = 1024) {
+    this.target = new THREE.WebGLRenderTarget(res, res, {
+      format: THREE.RedFormat, type: THREE.HalfFloatType, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+      depthBuffer: false, generateMipmaps: false, wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping,
+    });
+    this.material = new THREE.ShaderMaterial({
+      uniforms: { uCloudCover: { value: 0 }, uCloudOffset: { value: new THREE.Vector2() }, uBox: { value: new THREE.Vector3() } },
+      vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+      fragmentShader: /* glsl */ `
+        uniform float uCloudCover;
+        uniform vec2 uCloudOffset;
+        uniform vec3 uBox;
+        varying vec2 vUv;
+        float cwcHash(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+        float cwcNoise(vec2 p) {
+          vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(mix(cwcHash(i), cwcHash(i + vec2(1, 0)), u.x), mix(cwcHash(i + vec2(0, 1)), cwcHash(i + vec2(1, 1)), u.x), u.y);
+        }
+        float cwcFbm(vec2 p) {
+          float s = 0.0, a = 0.5;
+          mat2 r = mat2(0.8, -0.6, 0.6, 0.8);
+          for (int i = 0; i < 5; i++) { s += a * cwcNoise(p); p = r * p * 2.03; a *= 0.5; }
+          return s;
+        }
+        void main() {
+          // Same density as cloudDensity(), at the cloud-space point of this texel (offset already in).
+          vec2 p = (uBox.xy + vUv * uBox.z) / 2600.0;
+          float d = cwcFbm(p) * 0.75 + cwcFbm(p * 4.3 + 7.1) * 0.25;
+          float thr = mix(0.78, 0.2, uCloudCover);
+          gl_FragColor = vec4(clamp((d - thr) / 0.18, 0.0, 1.0), 0.0, 0.0, 1.0);
+        }`,
+      depthTest: false,
+      depthWrite: false,
+    });
+    const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.material);
+    quad.frustumCulled = false;
+    this.scene.add(quad);
+    worldLightUniforms.uCloudShadowTex.value = this.target.texture;
+  }
+
+  update(renderer: THREE.WebGLRenderer, cam: THREE.Vector3): void {
+    const u = worldLightUniforms;
+    const sun = u.uCloudSunDir.value;
+    if (u.uCloudShadowK.value <= 0 || sun.y <= 0.05) return;
+    // Cloud-space point above the camera along the sun ray.
+    const k = (CLOUD_BASE - cam.y) / sun.y;
+    const cx = cam.x + sun.x * k + u.uCloudOffset.value.x;
+    const cz = cam.z + sun.z * k + u.uCloudOffset.value.y;
+    const cover = u.uCloudCover.value;
+    if (Math.hypot(cx - this.centre.x, cz - this.centre.y) < this.size / 4 && Math.abs(cover - this.cover) < 0.002) return;
+    this.centre.set(cx, cz);
+    this.cover = cover;
+    const box = u.uCloudShadowBox.value.set(cx - this.size / 2, cz - this.size / 2, this.size);
+    this.material.uniforms.uCloudCover.value = cover;
+    (this.material.uniforms.uBox.value as THREE.Vector3).copy(box);
+    const prev = renderer.getRenderTarget();
+    const autoShadow = renderer.shadowMap.autoUpdate;
+    renderer.shadowMap.autoUpdate = false;
+    renderer.setRenderTarget(this.target);
+    renderer.render(this.scene, this.cam);
+    renderer.setRenderTarget(prev);
+    renderer.shadowMap.autoUpdate = autoShadow;
   }
 }

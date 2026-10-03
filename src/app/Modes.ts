@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { Post } from '../engine/Post';
 import { Drone } from '../sim/Drone';
+import { FixedStep } from '../sim/FixedStep';
 import type { FlyController } from '../sim/FlyController';
 import type { Input } from '../sim/Input';
 import type { Physics } from '../sim/Physics';
@@ -48,11 +49,17 @@ export interface ModeHost {
   setPaused(p: boolean): void;
 }
 
+/** The truck's suspension and the quad's flight controller are tuned at a 120 Hz physics step. */
 const PHYS_DT = 1 / 120;
 
+const _euler = new THREE.Euler();
+const _roll = new THREE.Quaternion();
+const _zAxis = new THREE.Vector3(0, 0, 1);
+
 /**
- * Drive, FPV drone, photo and editor modes: owns their objects and UI, runs their physics at a
- * fixed 120 Hz substep, and switches the camera between them.
+ * Drive, FPV drone, photo and editor modes: owns their objects and UI, runs their physics on a fixed
+ * 120 Hz clock independent of the frame rate (rendering interpolates between substeps), and switches
+ * the camera between them.
  */
 export class Modes {
   readonly vehicle: Vehicle;
@@ -62,7 +69,9 @@ export class Modes {
   readonly fpvSetup: FpvSetup;
   readonly photo: PhotoMode;
   readonly editor: Editor;
-  private acc = 0;
+  /** Fixed-step physics clocks (up to 8 / 10 substeps per frame before time slows down). */
+  private readonly driveClock = new FixedStep(PHYS_DT, 8);
+  private readonly droneClock = new FixedStep(PHYS_DT, 10);
   /** The walking/flying field of view (restored after the drone and photo mode). */
   baseFov: number;
   private readonly menu: HTMLDivElement;
@@ -240,11 +249,13 @@ export class Modes {
       // Chassis +X is forward: yaw it so +X points along the view.
       this.vehicle.spawn(x, h.world.groundHeight(x, z), z, heading + Math.PI / 2);
       this.vehicle.camYaw = 0;
+      this.driveClock.reset();
     } else if (m === 'drone') {
       if (!Number.isFinite(g)) return from;
       const x = cam.position.x + fwd.x * 2, z = cam.position.z + fwd.z * 2;
       h.physics.updateTerrain(h.world.store, x, z, 250);
       this.drone.spawn(x, h.world.groundHeight(x, z), z, heading);
+      this.droneClock.reset();
       this.sticks.setKeyboardThrottle(0);
       this.osd.show(true);
       h.post.settings.barrel = this.barrel;
@@ -311,15 +322,8 @@ export class Modes {
       v.controls(input, dt);
       h.physics.updateTerrain(h.world.store, v.position.x, v.position.z, 250);
       h.physics.updateTrunks(h.world.forest.treesNear(v.position.x, v.position.z, 45), v.position.x, v.position.z);
-      this.acc += dt;
-      let n = 0;
-      while (this.acc >= PHYS_DT && n < 8) {
-        v.step(PHYS_DT);
-        this.acc -= PHYS_DT;
-        n++;
-      }
-      if (n === 8) this.acc = 0;
-      v.render(h.camera, dt, (x, z) => h.world.groundHeight(x, z), h.world.sky.night);
+      this.driveClock.advance(dt, this.stepVehicle);
+      v.render(h.camera, dt, this.groundAt, h.world.sky.night, this.driveClock.alpha);
       h.world.setHeadlights(v.model.root, h.world.sky.night);
       if (input.hit('KeyR')) this.enter('drive', 'drive');
       h.world.playerFeet = v.position;
@@ -345,27 +349,28 @@ export class Modes {
       d.wind.set(h.world.weather.wind.x, 0, h.world.weather.wind.y).multiplyScalar(0.8);
       h.physics.updateTerrain(h.world.store, d.position.x, d.position.z, 200);
       h.physics.updateTrunks(h.world.forest.treesNear(d.position.x, d.position.z, 45), d.position.x, d.position.z);
-      this.acc += dt;
-      let n = 0;
-      while (this.acc >= PHYS_DT && n < 10) {
-        d.step(PHYS_DT, s);
-        this.acc -= PHYS_DT;
-        n++;
-      }
-      if (n === 10) this.acc = 0;
-      d.applyCamera(h.camera, dt, time);
-      const e = new THREE.Euler().setFromQuaternion(d.quaternion, 'YXZ');
+      this.droneSticks = s;
+      this.droneClock.advance(dt, this.stepDrone);
+      d.applyCamera(h.camera, dt, time, this.droneClock.alpha);
+      const e = _euler.setFromQuaternion(d.quaternion, 'YXZ');
       const tel = d.telemetry(h.world.groundHeight(d.position.x, d.position.z));
-      this.osd.update({
-        ...tel, cells: d.fc.spec.cells, throttle: s.throttle, mode: d.fc.mode.toUpperCase(), roll: e.z, pitch: e.x,
-        uptilt: THREE.MathUtils.degToRad(d.uptilt), pxPerRad: h.canvas.clientHeight / THREE.MathUtils.degToRad(h.camera.fov),
-        warning: d.crashed ? `${d.crashReason}  -  R TO RESET` : '', source: this.sticks.source,
-      }, dt);
+      const o = this.osdState;
+      o.alt = tel.alt; o.speed = tel.speed; o.volt = tel.volt; o.mah = tel.mah; o.amps = tel.amps; o.time = tel.time;
+      o.cells = d.fc.spec.cells;
+      o.throttle = s.throttle;
+      o.mode = d.fc.mode === 'acro' ? 'ACRO' : 'ANGLE';
+      o.roll = e.z;
+      o.pitch = e.x;
+      o.uptilt = THREE.MathUtils.degToRad(d.uptilt);
+      o.pxPerRad = h.canvas.clientHeight / THREE.MathUtils.degToRad(h.camera.fov);
+      o.warning = d.crashed ? (this.crashText ??= `${d.crashReason}  -  R TO RESET`) : ((this.crashText = null), '');
+      o.source = this.sticks.source;
+      this.osd.update(o, dt);
       h.world.playerFeet = d.position.y - h.world.groundHeight(d.position.x, d.position.z) < 2 ? d.position : null;
     } else if (mode === 'photo') {
       if (input.hit('KeyH')) this.photo.togglePanel();
       h.fly.update(dt);
-      if (this.photoRoll) h.camera.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), this.photoRoll));
+      if (this.photoRoll) h.camera.quaternion.multiply(_roll.setFromAxisAngle(_zAxis, this.photoRoll));
     } else if (mode === 'edit') {
       h.fly.update(dt);
       const g = h.world.groundHeight(h.camera.position.x, h.camera.position.z);
@@ -373,6 +378,21 @@ export class Modes {
       this.editor.update(dt);
     }
   }
+
+  /** The OSD's inputs, refilled every frame. */
+  private readonly osdState = {
+    alt: 0, speed: 0, volt: 0, mah: 0, amps: 0, time: 0, cells: 4, throttle: 0, mode: 'ACRO', roll: 0, pitch: 0, uptilt: 0, pxPerRad: 1,
+    warning: '', source: 'keyboard' as StickInput['source'],
+  };
+  private crashText: string | null = null;
+
+  /** Fixed-step callbacks (bound once, no closure per frame). */
+  private readonly stepVehicle = (h: number) => this.vehicle.step(h);
+  private droneSticks: ReturnType<StickInput['update']> | null = null;
+  private readonly stepDrone = (h: number) => {
+    if (this.droneSticks) this.drone.step(h, this.droneSticks);
+  };
+  private readonly groundAt = (x: number, z: number) => this.h.world.groundHeight(x, z);
 
   status(mode: Mode): string {
     if (mode === 'drive') {

@@ -3,6 +3,7 @@ import { FrameProfiler } from '../engine/FrameProfiler';
 import { CulledInstances } from '../world/InstanceCull';
 import { Post } from '../engine/Post';
 import { DynamicResolution, detectQuality, gpuName, QUALITY, QUALITY_LEVELS, saveQuality, type QualityLevel } from '../engine/Quality';
+import { FixedStep } from '../sim/FixedStep';
 import { FlyController } from '../sim/FlyController';
 import { Input } from '../sim/Input';
 import { Physics } from '../sim/Physics';
@@ -15,6 +16,7 @@ import { Bench } from './Bench';
 import { type Mode, Modes } from './Modes';
 import { readParams, type Params } from './params';
 import { SEASONS, World } from './World';
+import { vegUniforms } from '../world/vegetation/TreeMaterials';
 
 declare global {
   interface Window {
@@ -23,6 +25,8 @@ declare global {
 }
 
 export type { Mode } from './Modes';
+
+const _fwd = new THREE.Vector3();
 
 /** Browser storage can be unavailable (private windows, blocked site data). */
 function stored(key: string): string | null {
@@ -47,6 +51,13 @@ export class App {
   readonly camera: THREE.PerspectiveCamera;
   readonly params: Params;
   private readonly timer = new THREE.Timer();
+  /** The walker's physics clock: fixed 60 Hz steps, independent of the frame rate. */
+  private readonly walkClock = new FixedStep(1 / 60, 8);
+  private readonly stepWalker = (h: number) => {
+    this.player.step(h);
+    this.physics.step(h);
+  };
+  private autoWalking = false;
   world!: World;
   private post!: Post;
   private input!: Input;
@@ -153,7 +164,12 @@ export class App {
     const chunkR = Number(new URLSearchParams(location.search).get('chunkR') ?? 0);
     await this.world.init({ chunkRadius: chunkR || undefined, onProgress: progress });
     progress('Starting physics', 0.9);
-    this.post = new Post(this.renderer, this.world.atmosphere, { msaa: p.headless ? 0 : qs.msaa, fxaa: p.headless || qs.fxaa, ao: qs.ao });
+    this.post = new Post(this.renderer, this.world.atmosphere, {
+      msaa: p.headless ? 0 : qs.msaa, fxaa: p.headless || qs.fxaa, ao: qs.ao, taa: !p.headless && qs.taa,
+    });
+    // Rain and snow streaks are drawn after the TAA resolve (see Post.overlays); slow falling leaves stay
+    // in the scene, where TAA smooths them like everything else.
+    this.post.overlays.push(this.world.weather.root);
     this.world.prof = this.prof;
     this.post.prof = this.prof;
     this.scene.add(this.post.skyMesh);
@@ -238,12 +254,11 @@ export class App {
     const q = QUALITY[level];
     this.quality = level;
     const w = this.world;
-    if (w.sun.shadow.mapSize.x !== q.shadowMap) {
-      w.sun.shadow.mapSize.set(q.shadowMap, q.shadowMap);
-      w.sun.shadow.map?.dispose();
-      w.sun.shadow.map = null;
-    }
+    // Sun shadows: cascade tile size, reach and per-cascade refresh rates (see CascadedSunShadow).
+    w.setShadowQuality({ size: q.shadowMap, maxDistance: q.shadowDistance, interval: q.shadowInterval });
     this.post.settings.ao = q.ao;
+    if (!this.params.headless) this.post.setAntialias(q.msaa, q.taa);
+    w.forest.setAlphaToCoverage(this.post.settings.msaa > 0);
     w.water.uniforms.uSSR.value = q.ssr ? 1 : 0;
     w.grass.setDensity(q.grass);
     w.forest.setRadii(q.treeNear, q.treeLod0, q.shrubs);
@@ -251,7 +266,12 @@ export class App {
       w.chunks.loadRadius = q.chunks;
       w.chunks.unloadRadius = q.chunks + 400;
     }
-    this.dynRes = this.params.headless ? null : new DynamicResolution(q.targetMs);
+    // With TAA, dynamic resolution scales the scene's render size and the resolve upsamples to the
+    // full-resolution output (temporal upsampling); without, it scales the canvas.
+    this.dynRes = this.params.headless ? null : new DynamicResolution(q.targetMs, 1, q.taa ? 0.6 : 0.55);
+    this.post.setRenderScale(1);
+    // Dynamic resolution steers by GPU time: one timer query per frame (none when it is off).
+    this.prof.timeFrames = q.targetMs > 0 && !!this.dynRes;
     if (!this.params.headless) {
       this.renderer.setPixelRatio(this.basePixelRatio * q.scale);
       this.resize();
@@ -326,6 +346,7 @@ export class App {
     this.player.pitch = 0;
     this.player.despawn();
     this.spawned = false;
+    this.walkClock.reset();
   }
 
   setMode(m: Mode): void {
@@ -343,7 +364,7 @@ export class App {
     }
     if (from !== 'walk' && from !== 'fly') {
       // Coming back from another mode: face where its camera looked.
-      const f = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+      const f = _fwd.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
       this.player.yaw = Math.atan2(-f.x, -f.z);
       this.player.pitch = 0;
       this.fly.yaw = this.player.yaw;
@@ -357,6 +378,7 @@ export class App {
       this.fly.enabled = false;
       const g = this.world.groundHeight(this.camera.position.x, this.camera.position.z);
       if (Number.isFinite(g)) this.player.spawn(this.camera.position.x, g, this.camera.position.z);
+      this.walkClock.reset();
       this.player.yaw = this.fly.yaw;
       this.player.pitch = this.fly.pitch;
       this.spawned = Number.isFinite(g);
@@ -494,6 +516,7 @@ export class App {
         if (Number.isFinite(g) && this.world.store.levelAt(cam.x, cam.z) === 0) {
           this.physics.updateTerrain(this.world.store, cam.x, cam.z);
           this.player.spawn(cam.x, g, cam.z);
+          this.walkClock.reset();
           this.spawned = true;
         } else {
           cam.y = Number.isFinite(g) ? g + 1.7 : cam.y;
@@ -502,15 +525,21 @@ export class App {
       if (this.spawned) {
         this.physics.updateTerrain(this.world.store, cam.x, cam.z);
         this.physics.updateTrunks(this.world.forest.treesNear(cam.x, cam.z, 45), cam.x, cam.z);
+        // Headless tests walk forward 1/30 s per frame; the key is released once, when the walk ends.
+        let simDt = dt;
         if (this.autoWalk > 0 && this.walked < this.autoWalk) {
           this.input.keys.add('KeyW');
+          this.autoWalking = true;
           this.walked += 1 / 30;
-          this.player.update(1 / 30, this.input, this.camera);
-        } else {
+          simDt = 1 / 30;
+        } else if (this.autoWalking) {
           this.input.keys.delete('KeyW');
-          this.player.update(dt, this.input, this.camera);
+          this.autoWalking = false;
         }
-        this.physics.step();
+        // Look every frame; move in fixed physics steps; draw at the interpolated position.
+        this.player.look(dt, this.input);
+        this.walkClock.advance(simDt, this.stepWalker);
+        this.player.render(this.camera, this.walkClock.alpha, dt);
       }
     } else if (this.mode !== 'fly') {
       this.modes.update(this.mode, dt, this.time);
@@ -526,10 +555,14 @@ export class App {
     }
     pr.end('sim');
     this.camera.updateMatrixWorld();
+    // TAA: this frame's sub-pixel jitter, before anything reads the projection (undone after rendering).
+    this.post.beginFrame(this.camera);
+    vegUniforms.uDitherOffset.value.setScalar(this.post.taa ? 5.588238 * (this.frameCount % 16) : 0);
     if (this.mode === 'walk' || this.mode === 'fly') this.world.playerFeet = this.mode === 'walk' && this.spawned ? this.player.position : null;
     else if (this.mode === 'photo' || this.mode === 'edit') this.world.playerFeet = null;
     this.world.update(this.camera, this.post, this.time);
     this.post.render(this.scene, this.camera, dt, this.time);
+    this.post.endFrame(this.camera);
     this.input.endFrame();
     pr.begin('ui');
     this.updateDynamicResolution(rawMs, dt);
@@ -593,6 +626,10 @@ export class App {
     const cpuMs = this.prof.lastCpuMs;
     const gpuBound = Number.isFinite(gpuMs) ? gpuMs : rawMs > cpuMs * 1.35 ? rawMs : NaN;
     if (!Number.isFinite(gpuBound) || !this.dynRes.update(gpuBound, dt)) return;
+    if (this.post.taa) {
+      this.post.setRenderScale(this.dynRes.scale);
+      return;
+    }
     this.renderer.setPixelRatio(this.basePixelRatio * QUALITY[this.quality].scale * this.dynRes.scale);
     this.resize();
   }
@@ -604,7 +641,8 @@ export class App {
     const gpuTotal = s.gpu ? Object.values(s.gpu).reduce((a, b) => a + b, 0) : NaN;
     const drawTotal = Object.values(s.draws).reduce((a, b) => a + b, 0);
     this.profPanel!.textContent = [
-      `${(1000 / s.frameMs).toFixed(1)} fps  ${s.frameMs.toFixed(1)} ms/frame  ${this.post.pixelWidth}x${this.post.pixelHeight}  ${this.quality}`,
+      `${(1000 / s.frameMs).toFixed(1)} fps  ${s.frameMs.toFixed(1)} ms/frame  ${this.post.renderWidth}x${this.post.renderHeight}`
+        + `${this.post.renderWidth !== this.post.pixelWidth ? ` -> ${this.post.pixelWidth}x${this.post.pixelHeight}` : ''}  ${this.quality}`,
       `CPU ms (main thread)\n${fmt(s.cpu)}`,
       s.gpu ? `GPU ms (total ${gpuTotal.toFixed(1)})\n${fmt(s.gpu)}` : 'GPU ms: timer queries not available in this browser',
       `draws ${Math.round(drawTotal)}  tris ${(s.tris / 1e6).toFixed(2)} M  programs ${s.programs}\n${fmt(s.draws, 16)}`,

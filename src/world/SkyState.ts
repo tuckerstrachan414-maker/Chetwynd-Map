@@ -25,26 +25,37 @@ export class SkyState {
   /** 0 at day, 1 in full night. */
   night = 0;
   private readonly tmp: [number, number, number] = [0, 0, 0];
+  /** The date and hour the sun and moon positions were last computed for (they change only with it). */
+  private ephemNum = NaN;
+  private sunElevation = 0;
+  private moonElevation = 0;
 
   get date(): Date {
     return chetwyndLocalToDate(this.year, this.month, this.day, this.hour);
   }
 
   update(altKm: number, haze: number): void {
-    const d = this.date;
-    const sp = sunPosition(d);
-    horizontalToEngine(sp, this.sunDir);
-    const mp = moonPosition(d);
-    horizontalToEngine(mp, this.moonDir);
-    this.moonIllum = mp.illumination;
+    // Sun and moon positions depend only on the date and hour: recompute them when those change.
+    if (this.year * 1e7 + this.month * 1e5 + this.day * 1e3 + this.hour !== this.ephemNum) {
+      this.ephemNum = this.year * 1e7 + this.month * 1e5 + this.day * 1e3 + this.hour;
+      const d = this.date;
+      const sp = sunPosition(d);
+      horizontalToEngine(sp, this.sunDir);
+      const mp = moonPosition(d);
+      horizontalToEngine(mp, this.moonDir);
+      this.moonIllum = mp.illumination;
+      this.sunElevation = sp.elevation;
+      this.moonElevation = mp.elevation;
+    }
+    const sunEl = this.sunElevation, moonEl = this.moonElevation;
     const ts = transmittance(altKm, this.sunDir.y, haze, this.tmp);
     this.sunColor.setRGB(ts[0] * SUN_E, ts[1] * SUN_E, ts[2] * SUN_E);
     const tm = transmittance(altKm, this.moonDir.y, haze, this.tmp);
     this.moonE = MOON_FULL_E * this.moonIllum;
     this.moonColor.setRGB(tm[0] * this.moonE * 0.9, tm[1] * this.moonE * 0.95, tm[2] * this.moonE * 1.1);
     // Blend the shadow-casting light from sun to moon through twilight.
-    this.night = THREE.MathUtils.smoothstep(-sp.elevation, -2, 8);
-    if (sp.elevation > -4 || mp.elevation < 0) {
+    this.night = THREE.MathUtils.smoothstep(-sunEl, -2, 8);
+    if (sunEl > -4 || moonEl < 0) {
       this.lightDir.copy(this.sunDir);
       this.lightColor.copy(this.sunColor);
     } else {

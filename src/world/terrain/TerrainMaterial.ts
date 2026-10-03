@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { noiseTexture, texNoiseGlsl } from '../../engine/NoiseTexture';
 import { worldLit } from '../../engine/WorldLight';
 import { patchTerrainVertex } from './Terrain';
 import { terrainFragmentPars } from './terrainShaders';
@@ -37,12 +38,19 @@ uniform vec3 uGain[16];
 uniform float uDetailDist;
 uniform float uSnow;
 
+#ifdef TERRAIN_HASH_NOISE
 float tHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float tNoise(vec2 p) {
   vec2 i = floor(p); vec2 f = fract(p);
   vec2 u = f * f * (3.0 - 2.0 * f);
   return mix(mix(tHash(i), tHash(i + vec2(1, 0)), u.x), mix(tHash(i + vec2(0, 1)), tHash(i + vec2(1, 1)), u.x), u.y);
 }
+#else
+// Value noise from the lattice texture: one filtered read per octave instead of four sin hashes
+// (a dozen octaves per pixel here: macro breakup, micro variation, the material-grid warp).
+${texNoiseGlsl}
+float tNoise(vec2 p) { return texNoise(p); }
+#endif
 float tFbm(vec2 p) {
   float s = 0.0, a = 0.5;
   for (int i = 0; i < 4; i++) { s += a * tNoise(p); p *= 2.03; a *= 0.5; }
@@ -110,15 +118,16 @@ GSurf groundSurface(vec3 wp, vec3 N, float dist) {
   s.nts = vec3(0.0, 0.0, 1.0);
   s.rough = 0.9;
   s.ao = 1.0;
-  float nb = tFbm(wp.xz * 0.045);
-  float micro = tFbm(wp.xz * 0.35);
-  // Distant or coarse terrain: satellite albedo with gentle breakup.
+  // Distant or coarse terrain: satellite albedo with gentle breakup. (Each branch evaluates only the
+  // noise it uses: four texture reads per octave set saved on every terrain pixel.)
   float detail = (vA.w > 0.99 && vA.w < 1.01) ? 1.0 - smoothstep(uDetailDist * 0.4, uDetailDist, dist) : 0.0;
   if (detail <= 0.0) {
+    float micro = tFbm(wp.xz * 0.35);
     s.albedo = macro * (0.85 + 0.3 * micro);
     applySnow(s, wp, N, dist);
     return s;
   }
+  float nb = tFbm(wp.xz * 0.045);
   // Domain-warp the lookup into the 1 m material grid so cell edges never read as a grid.
   vec2 warp = vec2(tNoise(wp.xz * 0.9 + 3.1), tNoise(wp.xz * 0.9 + 17.7)) - 0.5;
   warp += (vec2(tNoise(wp.xz * 3.1), tNoise(wp.xz * 3.1 + 9.3)) - 0.5) * 0.45;
@@ -188,6 +197,7 @@ export function createTerrainMaterials(
     uGain: { value: layers.gains },
     uDetailDist: { value: 700 },
     uSnow: { value: 0 },
+    uNoiseTex: { value: noiseTexture() },
   });
   const material = new THREE.MeshStandardMaterial({ roughness: 0.92, metalness: 0 });
   const q = new URLSearchParams(location.search);
@@ -198,8 +208,13 @@ export function createTerrainMaterials(
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>\n${terrainFragmentPars}\n${groundPars}`)
       .replace('#include <map_fragment>', `
+        #ifdef DEBUG_FLAT_FS
+        vec3 tWorldN = vec3(0.0, 1.0, 0.0);
+        GSurf gs; gs.albedo = vec3(0.2); gs.nts = vec3(0.0, 0.0, 1.0); gs.rough = 0.9; gs.ao = 1.0;
+        #else
         vec3 tWorldN = terrainWorldNormal();
         GSurf gs = groundSurface(vTerrainPos, tWorldN, length(vTerrainPos - uCamPos));
+        #endif
         diffuseColor.rgb = gs.albedo;
         #ifdef DEBUG_SKIRTS
         if (vSkirt > 0.01) diffuseColor.rgb = vec3(1.0, 0.0, 0.0);

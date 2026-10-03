@@ -12,7 +12,8 @@ float thFetch(int slot, ivec2 t) {
   return texelFetch(uHeights, ivec3(t, slot), 0).r;
 }
 
-// Bilinear height from a data node. d = (slot, originX, originZ, texelsPerMetre).
+// Bilinear height from a data node. d = (slot, originX, originZ, texelsPerMetre). Four exact fetches:
+// on integrated GPUs, hardware filtering of 32-bit float textures is slower than doing it by hand.
 float thSample(vec4 d, vec2 xz) {
   vec2 t = clamp((xz - d.yz) * d.w, vec2(0.0), vec2(256.0));
   vec2 f = floor(t);
@@ -72,19 +73,13 @@ varying float vSkirt;
 flat varying vec4 vA;
 flat varying vec4 vB;
 
-float thLinear(vec4 d, vec2 t) {
-  vec2 uv = (clamp(t, vec2(0.0), vec2(256.0)) + 0.5) / 257.0;
-  return texture(uHeights, vec3(uv, d.x)).r;
-}
+uniform highp sampler2DArray uNormals;
 
+// Surface normal of a data node at (x, z): one filtered read of the precomputed normal atlas.
 vec3 thNormal(vec4 d, vec2 xz) {
-  vec2 t = (xz - d.yz) * d.w;
-  float sp = 1.0 / d.w;
-  float hl = thLinear(d, t - vec2(1.0, 0.0));
-  float hr = thLinear(d, t + vec2(1.0, 0.0));
-  float hu = thLinear(d, t - vec2(0.0, 1.0));
-  float hd = thLinear(d, t + vec2(0.0, 1.0));
-  return normalize(vec3(hl - hr, 2.0 * sp, hu - hd));
+  vec2 t = clamp((xz - d.yz) * d.w, vec2(0.0), vec2(256.0));
+  vec2 n = texture(uNormals, vec3((t + 0.5) / 257.0, d.x)).rg * 2.0 - 1.0;
+  return normalize(vec3(n.x, sqrt(max(1.0 - dot(n, n), 0.0)), n.y));
 }
 
 vec3 terrainWorldNormal() {

@@ -61,7 +61,8 @@ export class Bench {
     let i = 0;
     while (i < ROUTE.length - 2 && ROUTE[i + 1].t < tt) i++;
     const a = ROUTE[i], b = ROUTE[i + 1];
-    if (this.t > 0 && !wasWarm) {
+    // Frames slowed by the profiler's sampled GPU timing are left out of the frame-rate statistics.
+    if (this.t > 0 && !wasWarm && !prof?.excludeFrame) {
       this.times.push(frameMs);
       const leg = this.legTimes.get(a.leg) ?? [];
       leg.push(frameMs);
