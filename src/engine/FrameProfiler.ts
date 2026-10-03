@@ -36,15 +36,33 @@ export interface ProfileSummary {
 }
 
 const HITCH_MS = 50;
+/** GPU timer queries run on one frame in this many. */
+const GPU_EVERY = 12;
 
 /**
  * Where the frame time goes: main-thread CPU sections, GPU time per pass (EXT_disjoint_timer_query_webgl2,
  * where the browser offers it), draw calls per pass and scene part, and a log of long frames.
  * GPU queries cannot nest, so `gpu(name)` switches the running section.
+ *
+ * Timer queries are not free: on ANGLE/Direct3D 11 each one splits the GPU's command stream, and a frame
+ * with dozens of them (one per post pass, two per shadow-map check) ran several times slower on an
+ * integrated GPU. So GPU timing only runs on sampled frames (one in GPU_EVERY): per section while
+ * profiling (?prof, ?bench), else one query around the whole frame when dynamic resolution needs the
+ * GPU time (`timeFrames`). `excludeFrame` marks the frames a sample disturbed, which the benchmark skips.
  */
 export class FrameProfiler {
   private readonly gl: WebGL2RenderingContext;
   private readonly ext: TimerExt | null;
+  /** One query around the whole frame when not profiling in detail (feeds dynamic resolution). */
+  timeFrames = false;
+  private frameQuery: WebGLQuery | null = null;
+  private frameNo = 0;
+  /** This frame runs GPU timer queries. */
+  private sampling = false;
+  /** Frames left that a recent GPU sample may still be slowing down. */
+  private disturbed = 0;
+  /** The frame just measured was disturbed by GPU timing (statistics should skip it). */
+  excludeFrame = false;
   private readonly pool: WebGLQuery[] = [];
   private readonly inflight: FrameQuery[][] = [];
   private frameQueries: FrameQuery[] = [];
@@ -73,14 +91,14 @@ export class FrameProfiler {
   private trisSum = 0;
   private hitches: Hitch[] = [];
 
-  /** Count draw calls by pass and scene part (small overhead; on for ?prof and the benchmark). */
-  constructor(private readonly renderer: THREE.WebGLRenderer, countDraws: boolean) {
+  /** `detailed`: count draw calls by pass and scene part and time GPU sections (on for ?prof and the benchmark). */
+  constructor(private readonly renderer: THREE.WebGLRenderer, private readonly detailed: boolean) {
     this.gl = renderer.getContext() as WebGL2RenderingContext;
     // Triangle counts cover the whole frame (all passes); frameStart() resets them.
     renderer.info.autoReset = false;
     this.ext = this.gl.getExtension('EXT_disjoint_timer_query_webgl2') as TimerExt | null;
     this.programsSeen = renderer.info.programs?.length ?? 0;
-    if (countDraws) {
+    if (detailed) {
       type Draw = (cam: unknown, scene: unknown, geo: unknown, mat: unknown, obj: THREE.Object3D, group: unknown) => void;
       const r = renderer as unknown as { renderBufferDirect: Draw };
       const orig = r.renderBufferDirect.bind(renderer);
@@ -96,16 +114,21 @@ export class FrameProfiler {
         c.tris += this.renderer.info.render.triangles - t0;
       };
     }
-    // Shadow maps render inside renderer.render(): give them their own sections.
-    const sm = renderer.shadowMap as unknown as { render: (...a: unknown[]) => void };
+    // Shadow maps render inside renderer.render(): give them their own sections. Every render call
+    // (each post pass too) goes through here, so only calls with shadow-casting lights are timed.
+    const sm = renderer.shadowMap as unknown as { render: (lights: unknown[], ...a: unknown[]) => void };
     const origShadow = sm.render.bind(renderer.shadowMap);
-    sm.render = (...a: unknown[]) => {
+    sm.render = (lights: unknown[], ...a: unknown[]) => {
+      if (!lights.length || (!renderer.shadowMap.autoUpdate && !renderer.shadowMap.needsUpdate)) {
+        origShadow(lights, ...a);
+        return;
+      }
       const prevPass = this.pass;
       const prevGpu = this.gpuName;
       this.pass = 'shadow';
       this.gpu('shadow');
       this.begin('shadow');
-      origShadow(...a);
+      origShadow(lights, ...a);
       this.end('shadow');
       this.pass = prevPass;
       if (prevGpu) this.gpu(prevGpu);
@@ -139,9 +162,9 @@ export class FrameProfiler {
     this.cpuFrame.set(name, (this.cpuFrame.get(name) ?? 0) + performance.now() - s);
   }
 
-  /** Start timing GPU work under `name`, ending the running section. */
+  /** Start timing GPU work under `name`, ending the running section (only while profiling in detail). */
   gpu(name: string): void {
-    if (!this.ext) {
+    if (!this.ext || !this.detailed || !this.sampling) {
       this.gpuName = name;
       return;
     }
@@ -165,11 +188,26 @@ export class FrameProfiler {
     this.cpuFrame.clear();
     this.renderer.info.reset();
     this.pass = 'main';
+    // The interval measured at this frame's start belongs to the previous frame.
+    this.excludeFrame = this.disturbed > 0;
+    if (this.disturbed > 0) this.disturbed--;
+    this.sampling = this.ext !== null && (this.detailed || this.timeFrames) && this.frameNo++ % GPU_EVERY === 0;
+    if (this.sampling) this.disturbed = 2;
+    // Without detailed profiling, a single query times the whole frame for dynamic resolution.
+    if (this.ext && !this.detailed && this.timeFrames && this.sampling) {
+      this.frameQuery = this.pool.pop() ?? this.gl.createQuery();
+      if (this.frameQuery) this.gl.beginQuery(this.ext.TIME_ELAPSED_EXT, this.frameQuery);
+    }
   }
 
   /** `frameMs`: the real interval since the last frame. */
   frameEnd(frameMs: number): void {
     this.gpuStop();
+    if (this.frameQuery && this.ext) {
+      this.gl.endQuery(this.ext.TIME_ELAPSED_EXT);
+      this.frameQueries.push({ q: this.frameQuery, name: 'frame' });
+      this.frameQuery = null;
+    }
     if (this.frameQueries.length) this.inflight.push(this.frameQueries);
     this.frameQueries = [];
     this.collectGpu();

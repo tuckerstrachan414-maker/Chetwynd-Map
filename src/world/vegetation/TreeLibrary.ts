@@ -3,7 +3,7 @@ import { loadKtx2Array } from '../../engine/textures/TextureArrays';
 import { ktx2Loader } from '../../engine/textures/TextureArrays';
 import { ARCHETYPES, type Archetype } from './species';
 import { generateTree, type MeshPart, type TreeModel } from './TreeGen';
-import { createBarkMaterial, createFoliageDepthMaterial, createFoliageMaterial } from './TreeMaterials';
+import { createBarkDepthMaterial, createBarkMaterial, createFoliageDepthMaterial, createFoliageMaterial } from './TreeMaterials';
 
 export const VARIANTS = 3;
 export const IMP_VIEWS = 8;
@@ -14,13 +14,112 @@ export interface ModelEntry {
   arch: Archetype;
   variant: number;
   model: TreeModel;
-  geo: { bark0: THREE.BufferGeometry; leaves0: THREE.BufferGeometry; bark1: THREE.BufferGeometry; leaves1: THREE.BufferGeometry };
+  /** Full detail (0), middle distance (M: thinned from 0, see thinCards) and low-poly (1). */
+  geo: {
+    bark0: THREE.BufferGeometry; leaves0: THREE.BufferGeometry;
+    barkM: THREE.BufferGeometry; leavesM: THREE.BufferGeometry;
+    bark1: THREE.BufferGeometry; leaves1: THREE.BufferGeometry;
+  };
   foliage: THREE.Material;
   foliageDepth: THREE.Material;
   bark: THREE.Material;
+  barkDepth: THREE.Material;
   layer: number;
   frameW: number;
   frameH: number;
+}
+
+/**
+ * Reorder a foliage part's cards (two triangles, six indices each) from the outside of the crown
+ * inwards: by distance from the trunk axis relative to the crown's width at that height. Leaves are
+ * alpha-tested, so a fragment's depth is only written once it is known to survive, but the depth test
+ * itself still runs before shading: with the outer shell drawn first, the cards hidden inside the crown
+ * fail it instead of being shaded and then covered (the same triangles, in a better order).
+ */
+function outerFirst(p: MeshPart): MeshPart {
+  const idx = p.idx;
+  const pos = p.pos;
+  const cards = Math.floor(idx.length / 6);
+  if (cards < 2) return p;
+  const cy = new Float32Array(cards), cr = new Float32Array(cards);
+  let ymin = Infinity, ymax = -Infinity;
+  for (let c = 0; c < cards; c++) {
+    let x = 0, y = 0, z = 0;
+    for (let k = 0; k < 6; k++) {
+      const v = idx[c * 6 + k] * 3;
+      x += pos[v];
+      y += pos[v + 1];
+      z += pos[v + 2];
+    }
+    cy[c] = y / 6;
+    cr[c] = Math.hypot(x / 6, z / 6);
+    ymin = Math.min(ymin, cy[c]);
+    ymax = Math.max(ymax, cy[c]);
+  }
+  // The crown's width per height band.
+  const BINS = 16;
+  const span = Math.max(ymax - ymin, 1e-3);
+  const bin = (y: number) => Math.min(BINS - 1, Math.floor(((y - ymin) / span) * BINS));
+  const width = new Float32Array(BINS);
+  for (let c = 0; c < cards; c++) width[bin(cy[c])] = Math.max(width[bin(cy[c])], cr[c]);
+  const key = new Float32Array(cards);
+  for (let c = 0; c < cards; c++) key[c] = cr[c] / Math.max(width[bin(cy[c])], 1e-3);
+  const order = Array.from({ length: cards }, (_, c) => c).sort((a, b) => key[b] - key[a]);
+  const out = new Uint32Array(idx.length);
+  for (let n = 0; n < cards; n++) out.set(idx.subarray(order[n] * 6, order[n] * 6 + 6), n * 6);
+  return { ...p, idx: out };
+}
+
+/**
+ * The middle-distance foliage: half of the cards, kept or dropped in pairs (a spray's crossed cards
+ * stay together), each enlarged about its centre by sqrt 2 so the crown keeps its coverage and outline
+ * with half the vertices. Cards are four vertices and six indices each (see TreeGen.card).
+ */
+function thinCards(p: MeshPart): MeshPart {
+  const cards = Math.floor(p.idx.length / 6);
+  const s = Math.SQRT2;
+  const keep: number[] = [];
+  for (let c = 0; c < cards; c++) {
+    const pair = c >> 1;
+    if (((Math.imul(pair + 1, 2654435761) >>> 0) / 4294967296) < 0.5) keep.push(c);
+  }
+  const n = keep.length;
+  const pos = new Float32Array(n * 12), nrm = new Float32Array(n * 12), uv = new Float32Array(n * 8);
+  const wind = new Float32Array(n * 16), ao = new Float32Array(n * 4), idx = new Uint32Array(n * 6);
+  for (let k = 0; k < n; k++) {
+    const o = keep[k] * 6;
+    const vs = [p.idx[o], p.idx[o + 1], p.idx[o + 2], p.idx[o + 5]];
+    let cx = 0, cy = 0, cz = 0;
+    for (const v of vs) {
+      cx += p.pos[v * 3] / 4;
+      cy += p.pos[v * 3 + 1] / 4;
+      cz += p.pos[v * 3 + 2] / 4;
+    }
+    for (let j = 0; j < 4; j++) {
+      const v = vs[j], d = k * 4 + j;
+      pos[d * 3] = cx + (p.pos[v * 3] - cx) * s;
+      pos[d * 3 + 1] = cy + (p.pos[v * 3 + 1] - cy) * s;
+      pos[d * 3 + 2] = cz + (p.pos[v * 3 + 2] - cz) * s;
+      nrm.set(p.nrm.subarray(v * 3, v * 3 + 3), d * 3);
+      uv.set(p.uv.subarray(v * 2, v * 2 + 2), d * 2);
+      wind.set(p.wind.subarray(v * 4, v * 4 + 4), d * 4);
+      ao[d] = p.ao[v];
+    }
+    // Same winding as TreeGen.card: (0, 1, 2), (0, 2, 3).
+    idx.set([k * 4, k * 4 + 1, k * 4 + 2, k * 4, k * 4 + 2, k * 4 + 3], k * 6);
+  }
+  return { pos, nrm, uv, wind, ao, idx };
+}
+
+/** A geometry drawing the same buffers as `g` (its own object: instanced attributes are set per LOD set). */
+function shareGeometry(g: THREE.BufferGeometry, drawCount?: number): THREE.BufferGeometry {
+  const out = new THREE.BufferGeometry();
+  out.index = g.index;
+  for (const [name, attr] of Object.entries(g.attributes)) out.setAttribute(name, attr);
+  out.boundingSphere = g.boundingSphere;
+  out.userData = { ...g.userData };
+  if (drawCount !== undefined) out.setDrawRange(0, drawCount);
+  return out;
 }
 
 function toGeometry(p: MeshPart): THREE.BufferGeometry {
@@ -32,6 +131,8 @@ function toGeometry(p: MeshPart): THREE.BufferGeometry {
   g.setAttribute('ao', new THREE.BufferAttribute(p.ao, 1));
   g.setIndex(new THREE.BufferAttribute(p.idx, 1));
   g.computeBoundingSphere();
+  // Shadow copies draw only this many indices (see CulledInstances).
+  if (p.shadowIdx !== undefined) g.userData.shadowCount = p.shadowIdx;
   return g;
 }
 
@@ -85,19 +186,26 @@ export class TreeLibrary {
       for (let v = 0; v < VARIANTS; v++) {
         const model = generateTree(arch, 11 + v * 7 + a * 101, cells[fol] ?? [[0, 0, 1, 1]]);
         const deciduous = isDeciduous(arch);
+        const fo = { map: fmap, normalMap: fnrm, H: model.H, R: model.R, deciduous, flutter: arch === 'aspen' ? 1 : 0.5 };
+        const bark0 = toGeometry(model.lod0.bark);
+        // Spruces at middle distance: the trunk alone (their branches are hidden in the sprays).
+        const trunkOnly = arch === 'spruce' || arch === 'bspruce';
         this.entries.push({
           arch,
           variant: v,
           model,
           geo: {
-            bark0: toGeometry(model.lod0.bark),
-            leaves0: toGeometry(model.lod0.leaves),
+            bark0,
+            leaves0: toGeometry(outerFirst(model.lod0.leaves)),
+            barkM: shareGeometry(bark0, trunkOnly ? model.lod0.bark.shadowIdx : undefined),
+            leavesM: toGeometry(outerFirst(thinCards(model.lod0.leaves))),
             bark1: toGeometry(model.lod1.bark),
-            leaves1: toGeometry(model.lod1.leaves),
+            leaves1: toGeometry(outerFirst(model.lod1.leaves)),
           },
-          foliage: createFoliageMaterial({ map: fmap, normalMap: fnrm, H: model.H, deciduous, flutter: arch === 'aspen' ? 1 : 0.5 }),
-          foliageDepth: createFoliageDepthMaterial(fmap, model.H, deciduous),
-          bark: createBarkMaterial(bmap, bnrm, model.H),
+          foliage: createFoliageMaterial(fo),
+          foliageDepth: createFoliageDepthMaterial(fmap, model.H, model.R, deciduous),
+          bark: createBarkMaterial(bmap, bnrm, model.H, model.R),
+          barkDepth: createBarkDepthMaterial(model.H, model.R),
           layer: a * VARIANTS + v,
           frameW: model.R * 2 * 1.35,
           frameH: model.H * 1.12,

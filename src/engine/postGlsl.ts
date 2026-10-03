@@ -122,7 +122,8 @@ vec3 skyRadiance(vec3 dir) {
     vec3 moon = transmittanceTo(uMoonDir) * 10.0 * 0.12 / ATM_PI * mare * lit;
     col += moon * horizonFade * gDiskVis;
   }
-  col += starField(dir) * uStars * horizonFade * transmittanceTo(dir) * gDiskVis;
+  // Stars only at night (the field's two hashed layers are not free on every sky pixel by day).
+  if (uStars > 0.0) col += starField(dir) * uStars * horizonFade * transmittanceTo(dir) * gDiskVis;
   return col;
 }
 
@@ -222,19 +223,26 @@ void main() {
 }
 `;
 
+/** One bloom level on the way up: this level's down-sample (tent radius 0.5) plus the level below upsampled (radius 1). */
 export const upFrag = /* glsl */ `
 uniform sampler2D tSrc;
 uniform vec2 uTexel;
-uniform float uRadius;
+uniform sampler2D tPrev;
+uniform vec2 uTexelPrev;
+uniform float uHasPrev;
 varying vec2 vUv;
+vec3 tent(sampler2D t, vec2 r) {
+  vec3 c = texture2D(t, vUv).rgb * 4.0;
+  c += (texture2D(t, vUv + vec2(-r.x, 0.0)).rgb + texture2D(t, vUv + vec2(r.x, 0.0)).rgb
+      + texture2D(t, vUv + vec2(0.0, -r.y)).rgb + texture2D(t, vUv + vec2(0.0, r.y)).rgb) * 2.0;
+  c += texture2D(t, vUv + vec2(-r.x, -r.y)).rgb + texture2D(t, vUv + vec2(r.x, -r.y)).rgb
+      + texture2D(t, vUv + vec2(-r.x, r.y)).rgb + texture2D(t, vUv + vec2(r.x, r.y)).rgb;
+  return c / 16.0;
+}
 void main() {
-  vec2 r = uTexel * uRadius;
-  vec3 c = texture2D(tSrc, vUv).rgb * 4.0;
-  c += (texture2D(tSrc, vUv + vec2(-r.x, 0.0)).rgb + texture2D(tSrc, vUv + vec2(r.x, 0.0)).rgb
-      + texture2D(tSrc, vUv + vec2(0.0, -r.y)).rgb + texture2D(tSrc, vUv + vec2(0.0, r.y)).rgb) * 2.0;
-  c += texture2D(tSrc, vUv + vec2(-r.x, -r.y)).rgb + texture2D(tSrc, vUv + vec2(r.x, -r.y)).rgb
-      + texture2D(tSrc, vUv + vec2(-r.x, r.y)).rgb + texture2D(tSrc, vUv + vec2(r.x, r.y)).rgb;
-  gl_FragColor = vec4(c / 16.0, 1.0);
+  vec3 c = tent(tSrc, uTexel * 0.5);
+  if (uHasPrev > 0.5) c += tent(tPrev, uTexelPrev);
+  gl_FragColor = vec4(c, 1.0);
 }
 `;
 
@@ -257,9 +265,29 @@ uniform vec3 uGain;
 uniform float uNight;
 uniform float uBarrel;
 uniform float uAspect;
+uniform float uSharpen;
+uniform vec2 uTexel;
 varying vec2 vUv;
 
 float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
+
+// Contrast-adaptive sharpening (after AMD FidelityFX CAS) in a reversible tone-mapped space: restores
+// the detail temporal accumulation softens, less where local contrast is already high (no halos).
+vec3 casTm(vec3 c) { return c / (1.0 + max(c.r, max(c.g, c.b))); }
+vec3 casItm(vec3 t) { return t / max(1.0 - max(t.r, max(t.g, t.b)), 1e-4); }
+vec3 sharpen(vec2 uv, vec3 hdr) {
+  vec3 b = casTm(texture2D(tColor, uv + vec2(0.0, uTexel.y)).rgb);
+  vec3 d = casTm(texture2D(tColor, uv - vec2(uTexel.x, 0.0)).rgb);
+  vec3 e = casTm(hdr);
+  vec3 f = casTm(texture2D(tColor, uv + vec2(uTexel.x, 0.0)).rgb);
+  vec3 h = casTm(texture2D(tColor, uv - vec2(0.0, uTexel.y)).rgb);
+  vec3 mn = min(e, min(min(b, d), min(f, h)));
+  vec3 mx = max(e, max(max(b, d), max(f, h)));
+  vec3 amp = sqrt(clamp(min(mn, 1.0 - mx) / max(mx, vec3(1e-4)), 0.0, 1.0));
+  vec3 w = amp * (-1.0 / mix(8.0, 5.0, uSharpen));
+  vec3 r = (e + (b + d + f + h) * w) / (1.0 + 4.0 * w);
+  return casItm(clamp(r, 0.0, 0.999));
+}
 
 vec3 srgbEncode(vec3 c) {
   return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
@@ -274,6 +302,7 @@ void main() {
     uv = 0.5 + (vUv - 0.5) * (1.0 + uBarrel * dot(cq, cq)) / norm;
   }
   vec3 hdr = texture2D(tColor, uv).rgb;
+  if (uSharpen > 0.0) hdr = sharpen(uv, hdr);
   vec3 bloom = texture2D(tBloom, uv).rgb;
   float avgLog = texture2D(tAdapt, vec2(0.5)).r;
   // Luminance-adaptive key (Krawczyk et al. 2005): dim scenes are shown dimmer than daylight, as

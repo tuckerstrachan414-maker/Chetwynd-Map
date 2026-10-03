@@ -17,6 +17,8 @@ interface WaterIndex {
 interface Chunk {
   group: THREE.Group;
   seasonal: THREE.Mesh[];
+  /** The meshes that currently show (seasonal creeks only in spring), for height queries. */
+  live: THREE.Object3D[];
 }
 
 /** Water under a point: surface height, current speed (m/s), kind, and whether it is frozen over. */
@@ -30,6 +32,8 @@ export interface WaterSample {
 const _ray = new THREE.Raycaster();
 const _down = new THREE.Vector3(0, -1, 0);
 const _o = new THREE.Vector3();
+const _hits: THREE.Intersection[] = [];
+const _bary = new THREE.Vector3(1 / 3, 1 / 3, 1 / 3);
 
 /**
  * Streams the per-chunk water meshes (rivers, ponds, creeks) around the camera and keeps one coarse
@@ -51,6 +55,8 @@ export class WaterManager {
   private spring = false;
   private winter = false;
   stats = { chunks: 0, verts: 0 };
+  /** Result of `sample`, reused by every call (read it before the next call). */
+  private readonly sampleOut: WaterSample = { level: 0, speed: 0, kind: 0, frozen: false };
 
   constructor(private readonly baseUrl: string) {
     this.uniforms.tWater.value = createWaterTexture();
@@ -96,7 +102,10 @@ export class WaterManager {
     // 0 summer, 1 autumn, 2 winter, 3 spring. Seasonal creeks run with snowmelt in spring.
     this.spring = season === 3;
     this.winter = season === 2;
-    for (const c of this.chunks.values()) for (const m of c.seasonal) m.visible = this.spring;
+    for (const c of this.chunks.values()) {
+      for (const m of c.seasonal) m.visible = this.spring;
+      c.live = c.group.children.filter((m) => m.visible);
+    }
     this.uniforms.uIce.value = season === 2 ? 1 : 0;
     this.uniforms.uTurbid.value = season === 3 ? 1 : 0;
   }
@@ -144,7 +153,7 @@ export class WaterManager {
       this.stats.verts += nv;
       group.add(mesh);
     }
-    return { group, seasonal };
+    return { group, seasonal, live: group.children.filter((m) => m.visible) };
   }
 
   private async load(key: string): Promise<void> {
@@ -155,30 +164,48 @@ export class WaterManager {
     this.chunks.set(key, c);
   }
 
-  /** Water surface under (x, z) from the loaded chunk meshes, or null on dry land. */
+  /**
+   * Water surface under (x, z) from the loaded chunk meshes, or null on dry land. The returned object
+   * is reused by the next call.
+   */
   sample(x: number, z: number): WaterSample | null {
     const i = Math.floor((x + this.half) / this.size);
     const j = Math.floor((z + this.half) / this.size);
-    const c = this.chunks.get(`${i}_${j}`);
+    const c = this.chunks.get(this.keyOf(i, j));
     if (!c) return null;
     _o.set(x, 5000, z);
     _ray.set(_o, _down);
     _ray.layers.set(WATER_LAYER);
-    const hits = _ray.intersectObjects(c.group.children.filter((m) => m.visible), false);
+    _hits.length = 0;
+    const hits = _ray.intersectObjects(c.live, false, _hits);
     if (!hits.length || !hits[0].face) return null;
     const h = hits[0];
     const mesh = h.object as THREE.Mesh;
     const flow = mesh.geometry.getAttribute('flow');
     const meta = mesh.geometry.getAttribute('meta');
     const f = h.face!;
-    const b = h.barycoord ?? new THREE.Vector3(1 / 3, 1 / 3, 1 / 3);
+    const b = h.barycoord ?? _bary;
     const fx = (flow.getX(f.a) * b.x + flow.getX(f.b) * b.y + flow.getX(f.c) * b.z) * 0.001;
     const fz = (flow.getY(f.a) * b.x + flow.getY(f.b) * b.y + flow.getY(f.c) * b.z) * 0.001;
     const speed = Math.hypot(fx, fz);
     const kind = meta.getX(f.a);
     // Mirrors the shader: still water freezes; the river keeps open water in its fast current.
     const frozen = this.winter && (kind !== 0 || speed < 0.75);
-    return { level: h.point.y, speed, kind, frozen };
+    const out = this.sampleOut;
+    out.level = h.point.y;
+    out.speed = speed;
+    out.kind = kind;
+    out.frozen = frozen;
+    return out;
+  }
+
+  /** Chunk keys by grid cell, built once per cell (no string per query). */
+  private readonly keys = new Map<number, string>();
+  private keyOf(i: number, j: number): string {
+    const n = i * 4096 + j;
+    let k = this.keys.get(n);
+    if (k === undefined) this.keys.set(n, (k = `${i}_${j}`));
+    return k;
   }
 
   update(cam: THREE.Vector3): boolean {

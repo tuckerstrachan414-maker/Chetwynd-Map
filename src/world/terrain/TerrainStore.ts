@@ -8,6 +8,7 @@ interface LoadRes {
   ok: boolean;
   tile: HeightTile;
   mats: Uint8Array | null;
+  normals: Uint8Array;
 }
 
 export interface Resident {
@@ -25,13 +26,17 @@ export class TerrainStore {
   readonly atlas: THREE.DataArrayTexture;
   /** Ground material IDs per vertex (level-0 nodes only), same slot as the height layer. */
   readonly matAtlas: THREE.DataArrayTexture;
+  /** Surface normals (x, z as bytes) per sample, same slot as the height layer (see terrain.worker). */
+  readonly normalAtlas: THREE.DataArrayTexture;
   readonly n: number;
   private readonly slots: (Resident | null)[];
-  private readonly resident = new Map<string, Resident>();
-  private readonly wanted = new Map<string, { info: NodeInfo; priority: number }>();
-  private readonly loading = new Set<string>();
-  private readonly failed = new Set<string>();
-  private readonly pool: WorkerPool<{ url: string; matUrl?: string }, LoadRes>;
+  private readonly resident = new Map<number, Resident>();
+  private readonly wanted = new Map<number, { info: NodeInfo; priority: number }>();
+  private readonly loading = new Set<number>();
+  private readonly failed = new Set<number>();
+  /** Reused request queue (sorted by priority each frame there are requests). */
+  private readonly queue: [number, { info: NodeInfo; priority: number }][] = [];
+  private readonly pool: WorkerPool<{ url: string; matUrl?: string; spacing: number }, LoadRes>;
   private frame = 0;
   private pendingUploads = 0;
   /** Bumped whenever a node becomes resident (consumers re-sample heights/materials). */
@@ -62,6 +67,14 @@ export class TerrainStore {
     this.matAtlas.magFilter = THREE.NearestFilter;
     this.matAtlas.generateMipmaps = false;
     this.matAtlas.needsUpdate = true;
+    this.normalAtlas = new THREE.DataArrayTexture(new Uint8Array(this.n * this.n * 2 * slotCount), this.n, this.n, slotCount);
+    this.normalAtlas.format = THREE.RGFormat;
+    this.normalAtlas.type = THREE.UnsignedByteType;
+    this.normalAtlas.minFilter = THREE.LinearFilter;
+    this.normalAtlas.magFilter = THREE.LinearFilter;
+    this.normalAtlas.generateMipmaps = false;
+    this.normalAtlas.unpackAlignment = 1;
+    this.normalAtlas.needsUpdate = true;
     this.slots = new Array(slotCount).fill(null);
     const workers = Math.max(2, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
     this.pool = new WorkerPool(
@@ -99,7 +112,10 @@ export class TerrainStore {
   update(): void {
     this.frame++;
     if (this.wanted.size === 0) return;
-    const queue = [...this.wanted.entries()].sort((a, b) => a[1].priority - b[1].priority);
+    const queue = this.queue;
+    queue.length = 0;
+    for (const e of this.wanted) queue.push(e);
+    queue.sort((a, b) => a[1].priority - b[1].priority);
     this.wanted.clear();
     for (const [key, { info }] of queue) {
       if (this.loading.size >= this.maxConcurrent) break;
@@ -107,8 +123,8 @@ export class TerrainStore {
       const url = new URL(`${this.baseUrl}/${info.level}/${info.i}_${info.j}.bin`, location.href).href;
       const matUrl = info.level === 0 && this.materialUrl ? new URL(`${this.materialUrl}/0/${info.i}_${info.j}.bin`, location.href).href : undefined;
       this.pool
-        .run({ url, matUrl })
-        .then((res) => this.onLoaded(key, info, res.tile, res.mats))
+        .run({ url, matUrl, spacing: this.index.size(info.level) / this.index.nodeRes })
+        .then((res) => this.onLoaded(key, info, res.tile, res.mats, res.normals))
         .catch((err) => {
           console.warn('terrain load failed', key, err);
           this.failed.add(key);
@@ -117,7 +133,7 @@ export class TerrainStore {
     }
   }
 
-  private onLoaded(key: string, info: NodeInfo, tile: HeightTile, mats: Uint8Array | null): void {
+  private onLoaded(key: number, info: NodeInfo, tile: HeightTile, mats: Uint8Array | null, normals: Uint8Array): void {
     const slot = this.allocSlot();
     if (slot < 0) return;
     const r: Resident = { info, slot, heights: tile.heights, lastUsed: this.frame };
@@ -126,6 +142,11 @@ export class TerrainStore {
     (this.atlas.image.data as Float32Array).set(tile.heights, slot * layerSize);
     this.atlas.addLayerUpdate(slot);
     this.atlas.needsUpdate = true;
+    if (normals && normals.length === layerSize * 2) {
+      (this.normalAtlas.image.data as Uint8Array).set(normals, slot * layerSize * 2);
+      this.normalAtlas.addLayerUpdate(slot);
+      this.normalAtlas.needsUpdate = true;
+    }
     if (mats && mats.length === layerSize) {
       (this.matAtlas.image.data as Uint8Array).set(mats, slot * layerSize);
       this.matAtlas.addLayerUpdate(slot);
@@ -172,7 +193,7 @@ export class TerrainStore {
     if (!found) return NaN;
     const { level, i, j } = found.info;
     const s = idx.size(level);
-    const [x0, z0] = idx.origin(level, i, j);
+    const x0 = idx.originX(level, i), z0 = idx.originX(level, j);
     const res = idx.nodeRes;
     const tx = Math.min(Math.max(((x - x0) / s) * res, 0), res - 1e-6);
     const tz = Math.min(Math.max(((z - z0) / s) * res, 0), res - 1e-6);
@@ -195,7 +216,7 @@ export class TerrainStore {
     const s = idx.size(0);
     const r = this.get(0, Math.floor((x + idx.half) / s), Math.floor((z + idx.half) / s));
     if (!r) return -1;
-    const [x0, z0] = idx.origin(0, r.info.i, r.info.j);
+    const x0 = idx.originX(0, r.info.i), z0 = idx.originX(0, r.info.j);
     const res = idx.nodeRes;
     const ix = Math.min(Math.max(Math.round(((x - x0) / s) * res), 0), res);
     const iz = Math.min(Math.max(Math.round(((z - z0) / s) * res), 0), res);

@@ -25,7 +25,10 @@ export function createWaterUniforms(): Record<string, THREE.IUniform> {
     tSkySun: { value: null },
     tSkyMoon: { value: null },
     uShadowMap: { value: dummyShadow() },
-    uShadowMatrix: { value: new THREE.Matrix4() },
+    /** Sun shadow cascades (see CascadedSunShadow): light matrices into the atlas, and view-depth ranges. */
+    uCsmMatrix: { value: [new THREE.Matrix4(), new THREE.Matrix4(), new THREE.Matrix4(), new THREE.Matrix4()] },
+    uCsmData: { value: [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()] },
+    uShadowTexel: { value: 1 / 4096 },
     uShadowOn: { value: 0 },
     uShadowBias: { value: 0.0003 },
     uHaze: { value: 1.6 },
@@ -56,6 +59,8 @@ export function createWaterUniforms(): Record<string, THREE.IUniform> {
     uCloudShadowK: worldLightUniforms.uCloudShadowK,
     uCloudSunDir: worldLightUniforms.uCloudSunDir,
     uCloudGlow: worldLightUniforms.uCloudGlow,
+    uCloudShadowTex: worldLightUniforms.uCloudShadowTex,
+    uCloudShadowBox: worldLightUniforms.uCloudShadowBox,
   };
 }
 
@@ -64,13 +69,11 @@ attribute vec2 flow;
 attribute vec4 tint;
 attribute vec4 meta;
 uniform float uFar;
-uniform mat4 uShadowMatrix;
 varying vec3 vWPos;
 varying vec2 vFlow;
 varying vec3 vTint;
 varying float vTurb;
 varying float vKind;
-varying vec4 vShadowCoord;
 void main() {
   vec4 wp = modelMatrix * vec4(position, 1.0);
   vWPos = wp.xyz;
@@ -78,7 +81,6 @@ void main() {
   vTint = tint.rgb * 0.255;
   vTurb = tint.a;
   vKind = meta.x;
-  vShadowCoord = uShadowMatrix * vec4(wp.xyz + vec3(0.0, 0.4, 0.0), 1.0);
   vec4 mv = viewMatrix * wp;
   // The coarse valley mesh is pulled a hair towards the camera so coarse terrain LODs never cover it.
   if (uFar > 0.5) mv.xyz *= 0.9993;
@@ -97,6 +99,9 @@ uniform sampler2D tWater;
 uniform sampler2D tSkySun;
 uniform sampler2D tSkyMoon;
 uniform sampler2DShadow uShadowMap;
+uniform mat4 uCsmMatrix[4];
+uniform vec4 uCsmData[4];
+uniform float uShadowTexel;
 uniform float uShadowOn;
 uniform float uShadowBias;
 uniform mat4 uProj;
@@ -129,7 +134,6 @@ varying vec2 vFlow;
 varying vec3 vTint;
 varying float vTurb;
 varying float vKind;
-varying vec4 vShadowCoord;
 
 float hash12(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -193,18 +197,26 @@ vec4 flowSample(vec2 p, vec2 flow, float tile, float cycle, vec2 seed) {
 
 vec2 slopeOf(vec4 t) { return t.rg * 2.0 - 1.0; }
 
+// Sun shadow from the cascade covering this view depth (no blend band: the water's 4 taps are soft).
 float sunShadow() {
   if (uShadowOn < 0.5) return 1.0;
-  vec3 c = vShadowCoord.xyz / vShadowCoord.w;
+  vec3 camFwd = -normalize(uCamWorld[2].xyz);
+  float vd = dot(vWPos - uCamWorld[3].xyz, camFwd);
+  int ci = -1;
+  for (int i = 3; i >= 0; i--) if (vd < uCsmData[i].y) ci = i;
+  if (ci < 0) return 1.0;
+  vec4 sc = uCsmMatrix[ci] * vec4(vWPos + vec3(0.0, 0.4, 0.0), 1.0);
+  vec3 c = sc.xyz / sc.w;
   c.z += uShadowBias;
-  if (c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0) return 1.0;
-  vec2 texel = vec2(1.0 / 4096.0);
+  if (c.z > 1.0) return 1.0;
+  float far = ci == 3 ? smoothstep(uCsmData[3].z, uCsmData[3].y, vd) : 0.0;
+  vec2 texel = vec2(uShadowTexel);
   float s = 0.0;
   s += texture(uShadowMap, vec3(c.xy + texel * vec2(-0.7, -0.4), c.z));
   s += texture(uShadowMap, vec3(c.xy + texel * vec2(0.6, -0.6), c.z));
   s += texture(uShadowMap, vec3(c.xy + texel * vec2(-0.5, 0.7), c.z));
   s += texture(uShadowMap, vec3(c.xy + texel * vec2(0.7, 0.5), c.z));
-  return s * 0.25;
+  return mix(s * 0.25, 1.0, far);
 }
 
 // Screen-space reflection against the opaque scene copy. Returns colour and confidence.

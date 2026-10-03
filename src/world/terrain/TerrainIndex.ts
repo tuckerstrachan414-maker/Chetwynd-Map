@@ -15,14 +15,18 @@ export interface NodeInfo {
   hmax: number;
 }
 
-export const nodeKey = (level: number, i: number, j: number): string => `${level}/${i}/${j}`;
+/**
+ * Numeric key of a node (level < 64, i and j < 2^20 at every level here): map lookups by number
+ * allocate nothing, where a string key cost one allocation per height query and per quadtree visit.
+ */
+export const nodeKey = (level: number, i: number, j: number): number => (level * 1048576 + i) * 1048576 + j;
 
 export class TerrainIndex {
   readonly nodeRes: number;
   readonly nodeBase: number;
   readonly rootLevel: number;
   readonly half: number;
-  private readonly nodes = new Map<string, NodeInfo>();
+  private readonly nodes = new Map<number, NodeInfo>();
 
   constructor(json: TerrainIndexJson) {
     this.nodeRes = json.nodeRes;
@@ -45,13 +49,18 @@ export class TerrainIndex {
 
   /** Size in metres of a node at `level` (level may be negative for virtual render nodes). */
   size(level: number): number {
-    return this.nodeBase * Math.pow(2, level);
+    return this.nodeBase * (level >= 0 ? 1 << level : 1 / (1 << -level));
   }
 
   /** World-space min corner (x, z) of node (level, i, j). */
   origin(level: number, i: number, j: number): [number, number] {
     const s = this.size(level);
     return [-this.half + i * s, -this.half + j * s];
+  }
+
+  /** Min corner x of node (level, i) (allocation-free form of `origin`). */
+  originX(level: number, i: number): number {
+    return -this.half + i * this.size(level);
   }
 
   /** Finest existing data node containing (x, z), searching from `maxLevel` down to 0. */

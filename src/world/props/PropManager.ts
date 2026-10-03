@@ -237,6 +237,7 @@ export class PropManager {
         m.geometry.dispose();
         m.dispose();
       }
+      for (const m of kind.ci?.shadowMeshes ?? []) this.root.remove(m);
       kind.ci?.dispose();
       this.kinds.delete(key);
     }
@@ -514,6 +515,8 @@ export class PropManager {
     kind.r = Math.hypot(rx, rz, (box.max.y - box.min.y) / 2) + 0.2;
     const ci = new CulledInstances(kind.meshes, kind.meshes[0].instanceMatrix.count);
     kind.fills = (kind.channels ?? []).map((c) => ({ src: ci.channel(c.attr), value: c.value }));
+    // The shadow-pass copies cast for the parts that cast shadows.
+    for (const s of ci.shadowMeshes) this.root.add(s);
     return ci;
   }
 }

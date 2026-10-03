@@ -78,6 +78,7 @@ export class Weather {
   private readonly precip: THREE.Mesh;
   private readonly uniforms: Record<string, THREE.IUniform>;
   private cur: Preset = { ...PRESETS.scattered };
+  private readonly target: Preset = { ...PRESETS.scattered };
   readonly wind = new THREE.Vector2(3.0, 1.2);
 
   constructor() {
@@ -133,7 +134,7 @@ export class Weather {
 
   /** Blend towards the current preset; returns the values the world applies (haze, wetness). */
   update(dt: number, time: number, cam: THREE.Vector3, sunDir: THREE.Vector3, lightColor: THREE.Color, winter: boolean): Preset {
-    const target = { ...PRESETS[this.kind] };
+    const target = Object.assign(this.target, PRESETS[this.kind]);
     // Precipitation falls as snow in winter.
     if (winter && target.rain > 0) {
       target.snow = target.rain;
@@ -141,8 +142,13 @@ export class Weather {
       target.wet = 0;
     }
     const k = 1 - Math.exp(-dt * 0.6);
-    for (const key of Object.keys(this.cur) as (keyof Preset)[]) this.cur[key] += (target[key] - this.cur[key]) * k;
     const c = this.cur;
+    c.cover += (target.cover - c.cover) * k;
+    c.shadow += (target.shadow - c.shadow) * k;
+    c.haze += (target.haze - c.haze) * k;
+    c.rain += (target.rain - c.rain) * k;
+    c.snow += (target.snow - c.snow) * k;
+    c.wet += (target.wet - c.wet) * k;
     worldLightUniforms.uCloudCover.value = c.cover;
     worldLightUniforms.uCloudShadowK.value = c.shadow;
     worldLightUniforms.uCloudSunDir.value.copy(sunDir);

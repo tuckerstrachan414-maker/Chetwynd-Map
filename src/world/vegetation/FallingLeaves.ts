@@ -115,26 +115,28 @@ export class FallingLeaves {
     this.mesh.renderOrder = 5;
   }
 
+  /** Nearby source trees, [x, groundY, z, height, crownR, r, g, b, amount] each (reused). */
+  readonly sources = new Float32Array(MAX_TREES * 9);
+
   /**
-   * @param trees nearby deciduous trees as [x, groundY, z, height, crownR, r, g, b, amount]
+   * @param trees fills `sources` with the nearest deciduous trees within `radius` (at most `max`),
+   * nearest first, and returns how many (no allocation per update)
    */
-  update(cam: THREE.Vector3, time: number, on: boolean, trees: () => number[][]): void {
+  update(cam: THREE.Vector3, time: number, on: boolean, trees: (out: Float32Array, radius: number, max: number) => number): void {
     this.mesh.visible = on;
     if (!on) return;
     this.uniforms.uTime.value = time;
     if (cam.distanceToSquared(this.lastPos) < 16) return;
     this.lastPos.copy(cam);
-    const list = trees()
-      .map((t) => ({ t, d: Math.hypot(t[0] - cam.x, t[2] - cam.z) }))
-      .filter((e) => e.d < 40)
-      .sort((a, b) => a.d - b.d)
-      .slice(0, MAX_TREES);
+    const n = trees(this.sources, 40, MAX_TREES);
     const u = this.uniforms;
-    list.forEach(({ t }, i) => {
-      (u.uTrees.value as THREE.Vector4[])[i].set(t[0], t[1] + t[3] * 0.68, t[2], t[4]);
-      (u.uBase.value as number[])[i] = t[1];
-      (u.uTint.value as THREE.Vector4[])[i].set(t[5], t[6], t[7], t[8]);
-    });
-    u.uCount.value = list.length;
+    const t = this.sources;
+    for (let i = 0; i < n; i++) {
+      const o = i * 9;
+      (u.uTrees.value as THREE.Vector4[])[i].set(t[o], t[o + 1] + t[o + 3] * 0.68, t[o + 2], t[o + 4]);
+      (u.uBase.value as number[])[i] = t[o + 1];
+      (u.uTint.value as THREE.Vector4[])[i].set(t[o + 5], t[o + 6], t[o + 7], t[o + 8]);
+    }
+    u.uCount.value = n;
   }
 }

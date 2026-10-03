@@ -1,6 +1,7 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
 import { buildPickup, PICKUP, type PickupParts } from '../world/vehicle/PickupModel';
+import { PoseHistory } from './FixedStep';
 import type { Input } from './Input';
 import type { Physics } from './Physics';
 
@@ -12,14 +13,31 @@ export interface GripState {
 
 export type DriveCam = 'chase' | 'hood' | 'bumper';
 
+const _pos = new THREE.Vector3();
+const _quat = new THREE.Quaternion();
+const _fwd = new THREE.Vector3();
+const _up = new THREE.Vector3();
+const _want = new THREE.Vector3();
+const _look = new THREE.Vector3();
+const _off = new THREE.Vector3();
+const _yAxis = new THREE.Vector3(0, 1, 0);
+const _v = { x: 0, y: 0, z: 0 };
+const _r = { x: 0, y: 0, z: 0, w: 1 };
+
 /**
  * Drivable pickup: Rapier ray-cast vehicle with 4x4 drive, a torque curve through an automatic
  * gearbox, speed-sensitive steering, brakes and a handbrake, plus chase / hood / bumper cameras.
+ *
+ * Physics runs in fixed substeps (Modes); the model and cameras use the chassis pose interpolated
+ * between the last two substeps (PoseHistory), so the truck moves smoothly at any frame rate. The body,
+ * colliders and ray-cast controller are made once and parked (disabled) between drives.
  */
 export class Vehicle {
   readonly model: PickupParts;
   body!: RAPIER.RigidBody;
   private ctrl!: RAPIER.DynamicRayCastVehicleController;
+  private live = false;
+  private readonly history = new PoseHistory();
   readonly position = new THREE.Vector3();
   readonly quaternion = new THREE.Quaternion();
   speed = 0; // m/s along the chassis forward axis
@@ -44,13 +62,28 @@ export class Vehicle {
   }
 
   get active(): boolean {
-    return !!this.body;
+    return this.live;
   }
 
   spawn(x: number, groundY: number, z: number, yaw: number): void {
-    this.remove();
+    const q = _quat.setFromAxisAngle(_yAxis, yaw);
+    if (this.body) {
+      // Reuse the parked chassis: place it, stop it and wake it.
+      _v.x = x; _v.y = groundY + PICKUP.rideY + 0.25; _v.z = z;
+      _r.x = q.x; _r.y = q.y; _r.z = q.z; _r.w = q.w;
+      this.body.setEnabled(true);
+      this.body.setTranslation(_v, true);
+      this.body.setRotation(_r, true);
+      _v.x = 0; _v.y = 0; _v.z = 0;
+      this.body.setLinvel(_v, true);
+      this.body.setAngvel(_v, true);
+      this.body.resetForces(true);
+      this.body.resetTorques(true);
+      this.live = true;
+      this.finishSpawn();
+      return;
+    }
     const w = this.physics.world;
-    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
     this.body = w.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic()
         .setTranslation(x, groundY + PICKUP.rideY + 0.25, z)
@@ -80,18 +113,24 @@ export class Vehicle {
       this.ctrl.setWheelMaxSuspensionForce(i, 90000);
       this.ctrl.setWheelSideFrictionStiffness(i, 1.0);
     }
+    this.live = true;
+    this.finishSpawn();
+  }
+
+  private finishSpawn(): void {
     this.model.root.visible = true;
     this.camInit = false;
     this.gear = 1;
+    this.speed = 0;
     this.sync();
+    this.history.reset(this.position, this.quaternion);
   }
 
+  /** Park the truck: the body stays allocated (disabled) for the next drive. */
   remove(): void {
-    if (!this.body) return;
-    const w = this.physics.world;
-    w.removeVehicleController(this.ctrl);
-    w.removeRigidBody(this.body);
-    this.body = undefined as unknown as RAPIER.RigidBody;
+    if (!this.live) return;
+    this.body.setEnabled(false);
+    this.live = false;
     this.model.root.visible = false;
   }
 
@@ -181,19 +220,22 @@ export class Vehicle {
       c.setWheelFrictionSlip(i, i >= 2 && this.handbrake ? slip * 0.45 : slip);
     }
     c.updateVehicle(h);
-    const prev = this.physics.world.timestep;
-    this.physics.world.timestep = h;
-    this.physics.world.step();
-    this.physics.world.timestep = prev;
+    this.physics.step(h);
     this.sync();
+    this.history.push(this.position, this.quaternion);
     for (let i = 0; i < 4; i++) this.spin[i] -= (this.speed * h) / PICKUP.wheelR;
   }
 
-  /** Pose the model (wheels on the suspension) and place the camera. */
-  render(camera: THREE.PerspectiveCamera, dt: number, groundAt: (x: number, z: number) => number, night: number): void {
+  /**
+   * Pose the model (wheels on the suspension) and place the camera, at the chassis pose interpolated
+   * `alpha` of the way from the previous physics substep to the last one.
+   */
+  render(camera: THREE.PerspectiveCamera, dt: number, groundAt: (x: number, z: number) => number, night: number, alpha = 1): void {
     const m = this.model;
-    m.root.position.copy(this.position);
-    m.root.quaternion.copy(this.quaternion);
+    const pos = _pos, quat = _quat;
+    this.history.sample(alpha, pos, quat);
+    m.root.position.copy(pos);
+    m.root.quaternion.copy(quat);
     const c = this.ctrl;
     for (let i = 0; i < 4; i++) {
       const w = m.wheels[i];
@@ -207,19 +249,19 @@ export class Vehicle {
     m.headMat.emissiveIntensity = THREE.MathUtils.smoothstep(night, 0.2, 0.6) * 30 + 0.3;
     m.tailMat.emissiveIntensity = (this.brake > 0.05 ? 18 : 0) + THREE.MathUtils.smoothstep(night, 0.2, 0.6) * 6;
 
-    const fwd = new THREE.Vector3(1, 0, 0).applyQuaternion(this.quaternion);
-    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(this.quaternion);
+    const fwd = _fwd.set(1, 0, 0).applyQuaternion(quat);
+    const up = _up.set(0, 1, 0).applyQuaternion(quat);
     if (this.camMode === 'chase') {
       const yaw = Math.atan2(-fwd.z, fwd.x) + this.camYaw + Math.PI;
       const dist = 8.5;
-      const want = new THREE.Vector3(
-        this.position.x + Math.cos(yaw) * Math.cos(this.camPitch) * dist,
-        this.position.y + 1.2 + Math.sin(this.camPitch) * dist,
-        this.position.z - Math.sin(yaw) * Math.cos(this.camPitch) * dist,
+      const want = _want.set(
+        pos.x + Math.cos(yaw) * Math.cos(this.camPitch) * dist,
+        pos.y + 1.2 + Math.sin(this.camPitch) * dist,
+        pos.z - Math.sin(yaw) * Math.cos(this.camPitch) * dist,
       );
       const g = groundAt(want.x, want.z);
       if (Number.isFinite(g)) want.y = Math.max(want.y, g + 0.5);
-      const look = this.position.clone().add(new THREE.Vector3(0, 1.1, 0));
+      const look = _look.set(pos.x, pos.y + 1.1, pos.z);
       const k = this.camInit ? 1 - Math.exp(-dt * 8) : 1;
       this.camPos.lerp(want, k);
       this.camLook.lerp(look, this.camInit ? 1 - Math.exp(-dt * 14) : 1);
@@ -228,10 +270,10 @@ export class Vehicle {
       camera.up.set(0, 1, 0);
       camera.lookAt(this.camLook);
     } else {
-      const off = this.camMode === 'hood' ? new THREE.Vector3(0.55, 0.62, -0.38) : new THREE.Vector3(3.05, -0.38, 0);
-      camera.position.copy(off.applyQuaternion(this.quaternion).add(this.position));
+      const off = this.camMode === 'hood' ? _off.set(0.55, 0.62, -0.38) : _off.set(3.05, -0.38, 0);
+      camera.position.copy(off.applyQuaternion(quat).add(pos));
       camera.up.copy(up);
-      camera.lookAt(camera.position.clone().add(fwd));
+      camera.lookAt(_look.copy(camera.position).add(fwd));
       this.camInit = false;
     }
   }

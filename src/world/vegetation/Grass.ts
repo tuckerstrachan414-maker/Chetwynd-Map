@@ -44,6 +44,8 @@ export const grassUniforms = {
   uGrassSeason: { value: 0 },
   /** Quality density scale (1 = full). */
   uDensity: { value: 1 },
+  /** The view's ground footprint as half-planes (see Grass.update). */
+  uHull: { value: Array.from({ length: 5 }, () => new THREE.Vector3(0, 0, 1)) },
 };
 
 const grassVert = /* glsl */ `
@@ -60,10 +62,14 @@ uniform vec3 uCamSnap;
 uniform float uCell;
 uniform vec2 uGridOrg;
 uniform float uGridW;
+// Instance order over the cell box: (rows, major axis is x, walk the major axis downwards).
+uniform vec3 uGridWalk;
 uniform float uPerCell;
 uniform float uInner;
 uniform float uOuter;
 uniform float uBladeScale;
+// The view's footprint on the ground as up to five half-planes (inward normal x, z and offset).
+uniform vec3 uHull[5];
 attribute vec3 blade; // (height fraction 0..1, blade index, side -1..1)
 varying float vT;
 varying vec3 vGrassCol;
@@ -80,9 +86,29 @@ const grassBegin = /* glsl */ `
   float id = float(gl_InstanceID);
   float cellId = floor(id / uPerCell);
   float sub = id - cellId * uPerCell;
-  // Only the cells under the camera's view are instanced (uGridOrg/uGridW, set per frame).
-  vec2 c = vec2(mod(cellId, uGridW), floor(cellId / uGridW)) + uGridOrg;
+  // Only the cells under the camera's view are instanced (uGridOrg/uGridW, set per frame), walked
+  // outwards from the camera along the view's main axis: near clumps are drawn first, so the depth
+  // test rejects the hidden blades behind them before they are shaded.
+  vec2 c;
+  if (uGridWalk.y < 0.5) {
+    float r = floor(cellId / uGridW);
+    c = vec2(cellId - r * uGridW, uGridWalk.z > 0.5 ? uGridWalk.x - 1.0 - r : r);
+  } else {
+    float r = floor(cellId / uGridWalk.x);
+    c = vec2(uGridWalk.z > 0.5 ? uGridW - 1.0 - r : r, cellId - r * uGridWalk.x);
+  }
+  c += uGridOrg;
   vec2 cellW = (floor(uCamSnap.xz / uCell) + c) * uCell;
+  // A cell whose ground lies outside the view's footprint (about half of the instance box) is dropped
+  // before any other work, and every culled clump leaves right away: the rest of the vertex shader
+  // (transforms, shadow coordinates, lighting varyings) would only be thrown away with the triangle.
+  {
+    vec2 cc0 = cellW + 0.5 * uCell;
+    float mrg = uCell * 0.71 + 1.0;
+    for (int k = 0; k < 5; k++) {
+      if (dot(uHull[k].xy, cc0) + uHull[k].z < -mrg) { gl_Position = vec4(0.0, 0.0, -2.0, 1.0); return; }
+    }
+  }
   vec2 h1 = gHash2(cellW * 1.37 + sub * 17.17);
   vec2 h2 = gHash2(cellW * 0.73 + sub * 5.31 + 11.0);
   vec2 wp = cellW + h1 * uCell;
@@ -97,39 +123,51 @@ const grassBegin = /* glsl */ `
   // Density thins with distance inside each ring; the outer ring skips the inner disk.
   float ring = smoothstep(uOuter, uOuter * 0.7, d) * (uInner > 0.0 ? smoothstep(uInner * 0.85, uInner, d) : 1.0);
   bool keep = density * ring * uDensity > h2.x && gtype > 0.5;
-  // Height and look per grass type: lawn, meadow, woodland, wet sedge, stubble.
-  float ht = gtype < 1.5 ? 0.09 : gtype < 2.5 ? 0.55 : gtype < 3.5 ? 0.4 : gtype < 4.5 ? 0.7 : 0.18;
-  ht *= (0.6 + 0.8 * h2.y) * (0.75 + 0.5 * var);
-  if (uGrassSeason > 2.5) ht *= 0.6; // spring: new growth is short
-  float bw = (gtype < 1.5 ? 0.008 : 0.013) * uBladeScale;
-  // Each clump fans its blades out around a random heading.
-  float ang = h1.x * 6.2831 + blade.y * 2.39996;
-  vec2 dir = vec2(cos(ang), sin(ang));
-  vec2 perp = vec2(-dir.y, dir.x);
+  // The instance grid is the view's footprint box on the ground: clumps inside it but outside the view
+  // (half the box, typically) are dropped here too, before any of the blade work below.
+  if (keep && d > 1.5) {
+    vec4 cc = projectionMatrix * (viewMatrix * vec4(wp.x, gH + 0.3, wp.y, 1.0));
+    keep = cc.w > 0.0 && all(lessThan(abs(cc.xy), vec2(cc.w * 1.15 + 0.6)));
+  }
+  if (!keep) { gl_Position = vec4(0.0, 0.0, -2.0, 1.0); return; }
+  vec2 perp = vec2(1.0, 0.0);
+  vec3 transformed = vec3(0.0, -1e5, 0.0);
   float t = blade.x;
-  float lean = (0.15 + 0.35 * fract(h2.y * 7.0 + blade.y * 0.37)) * t * t;
-  vec3 local = vec3(0.0);
-  float spread = (gtype < 1.5 ? 0.05 : 0.12) * uBladeScale;
-  local.xz = dir * (spread * fract(blade.y * 0.618 + h1.y) + lean * ht) + perp * blade.z * bw * (1.0 - t * 0.85);
-  local.y = t * ht;
-  // Wind: gusting sway, stronger at the tip; the player parts the grass around their feet.
-  float gust = 0.6 + 0.4 * sin(uTime * 0.9 + wp.x * 0.11 + wp.y * 0.07) * sin(uTime * 0.37 + wp.y * 0.05);
-  float sway = sin(uTime * 2.1 + wp.x * 0.9 + wp.y * 0.7 + blade.y) * 0.5 + 0.5;
-  local.xz += uWindDir * (t * t) * ht * uWind * (0.35 + 0.5 * sway) * gust;
-  vec2 away = wp - uPlayer.xz;
-  float pd = length(away);
-  float push = (1.0 - smoothstep(0.2, 0.9, pd)) * step(abs(uPlayer.y - gH), 2.0);
-  local.xz += (pd > 1e-3 ? away / pd : vec2(0.0)) * push * t * t * ht * 0.8;
-  local.y *= 1.0 - 0.5 * push * t;
-  vec3 transformed = vec3(wp.x, gH, wp.y) + local;
-  if (!keep || ht < 0.02) transformed = vec3(0.0, -1e5, 0.0);
   vT = t;
-  vGrassAo = mix(0.45, 1.0, t);
-  vec3 baseC = gtype < 1.5 ? vec3(0.09, 0.19, 0.04) : gtype < 2.5 ? vec3(0.13, 0.2, 0.05) : gtype < 3.5 ? vec3(0.1, 0.17, 0.05) : gtype < 4.5 ? vec3(0.11, 0.17, 0.07) : vec3(0.35, 0.28, 0.14);
-  // Autumn cures meadow grass to straw; lawns stay greener.
-  if (uGrassSeason > 0.5 && uGrassSeason < 1.5) baseC = mix(baseC, vec3(0.38, 0.3, 0.13), gtype < 1.5 ? 0.35 : 0.8);
-  if (uGrassSeason > 2.5) baseC = mix(baseC, vec3(0.16, 0.26, 0.05), 0.5);
-  vGrassCol = baseC * (0.75 + 0.5 * var) * (0.85 + 0.3 * h2.y);
+  vGrassAo = 1.0;
+  vGrassCol = vec3(0.0);
+  if (keep) {
+    // Height and look per grass type: lawn, meadow, woodland, wet sedge, stubble.
+    float ht = gtype < 1.5 ? 0.09 : gtype < 2.5 ? 0.55 : gtype < 3.5 ? 0.4 : gtype < 4.5 ? 0.7 : 0.18;
+    ht *= (0.6 + 0.8 * h2.y) * (0.75 + 0.5 * var);
+    if (uGrassSeason > 2.5) ht *= 0.6; // spring: new growth is short
+    float bw = (gtype < 1.5 ? 0.008 : 0.013) * uBladeScale;
+    // Each clump fans its blades out around a random heading.
+    float ang = h1.x * 6.2831 + blade.y * 2.39996;
+    vec2 dir = vec2(cos(ang), sin(ang));
+    perp = vec2(-dir.y, dir.x);
+    float lean = (0.15 + 0.35 * fract(h2.y * 7.0 + blade.y * 0.37)) * t * t;
+    vec3 local = vec3(0.0);
+    float spread = (gtype < 1.5 ? 0.05 : 0.12) * uBladeScale;
+    local.xz = dir * (spread * fract(blade.y * 0.618 + h1.y) + lean * ht) + perp * blade.z * bw * (1.0 - t * 0.85);
+    local.y = t * ht;
+    // Wind: gusting sway, stronger at the tip; the player parts the grass around their feet.
+    float gust = 0.6 + 0.4 * sin(uTime * 0.9 + wp.x * 0.11 + wp.y * 0.07) * sin(uTime * 0.37 + wp.y * 0.05);
+    float sway = sin(uTime * 2.1 + wp.x * 0.9 + wp.y * 0.7 + blade.y) * 0.5 + 0.5;
+    local.xz += uWindDir * (t * t) * ht * uWind * (0.35 + 0.5 * sway) * gust;
+    vec2 away = wp - uPlayer.xz;
+    float pd = length(away);
+    float push = (1.0 - smoothstep(0.2, 0.9, pd)) * step(abs(uPlayer.y - gH), 2.0);
+    local.xz += (pd > 1e-3 ? away / pd : vec2(0.0)) * push * t * t * ht * 0.8;
+    local.y *= 1.0 - 0.5 * push * t;
+    if (ht >= 0.02) transformed = vec3(wp.x, gH, wp.y) + local;
+    vGrassAo = mix(0.45, 1.0, t);
+    vec3 baseC = gtype < 1.5 ? vec3(0.09, 0.19, 0.04) : gtype < 2.5 ? vec3(0.13, 0.2, 0.05) : gtype < 3.5 ? vec3(0.1, 0.17, 0.05) : gtype < 4.5 ? vec3(0.11, 0.17, 0.07) : vec3(0.35, 0.28, 0.14);
+    // Autumn cures meadow grass to straw; lawns stay greener.
+    if (uGrassSeason > 0.5 && uGrassSeason < 1.5) baseC = mix(baseC, vec3(0.38, 0.3, 0.13), gtype < 1.5 ? 0.35 : 0.8);
+    if (uGrassSeason > 2.5) baseC = mix(baseC, vec3(0.16, 0.26, 0.05), 0.5);
+    vGrassCol = baseC * (0.75 + 0.5 * var) * (0.85 + 0.3 * h2.y);
+  }
 `;
 
 function clumpGeometry(blades: number, segs: number): THREE.InstancedBufferGeometry {
@@ -210,10 +248,12 @@ export class Grass {
       uCell: { value: cell },
       uGridOrg: { value: new THREE.Vector2(-Math.floor(gridN / 2), -Math.floor(gridN / 2)) },
       uGridW: { value: gridN },
+      uGridWalk: { value: new THREE.Vector3(gridN, 0, 0) },
       uPerCell: { value: perCell },
       uInner: { value: inner },
       uOuter: { value: outer },
       uBladeScale: { value: scale },
+      uHull: grassUniforms.uHull,
     };
     const m = new THREE.MeshStandardMaterial({ roughness: 0.65, metalness: 0, side: THREE.DoubleSide });
     m.onBeforeCompile = (shader) => {
@@ -333,31 +373,87 @@ export class Grass {
 
   private readonly corner = new THREE.Vector3();
   private readonly invProj = new THREE.Matrix4();
+  /** Footprint points (camera and the four far corners, x/z) and their convex hull, as indices. */
+  private readonly fp = new Float32Array(10);
+  private readonly hull = new Int32Array(6);
+
+  /**
+   * The ground the view can see within the grass's reach lies inside the convex hull of the camera
+   * and the far corners of the view pyramid cut off at that reach (seen from above): its edges become
+   * the half-planes the vertex shader drops cells with.
+   */
+  private setHull(): void {
+    const fp = this.fp;
+    const H = grassUniforms.uHull.value;
+    // Monotone chain over the five points (sorted by x, then z).
+    const idx = [0, 1, 2, 3, 4].sort((a, b) => fp[a * 2] - fp[b * 2] || fp[a * 2 + 1] - fp[b * 2 + 1]);
+    const cross = (o: number, a: number, b: number) =>
+      (fp[a * 2] - fp[o * 2]) * (fp[b * 2 + 1] - fp[o * 2 + 1]) - (fp[a * 2 + 1] - fp[o * 2 + 1]) * (fp[b * 2] - fp[o * 2]);
+    const h = this.hull;
+    let n = 0;
+    for (const i of idx) {
+      while (n >= 2 && cross(h[n - 2], h[n - 1], i) <= 0) n--;
+      h[n++] = i;
+    }
+    const lower = n + 1;
+    for (let k = idx.length - 2; k >= 0; k--) {
+      const i = idx[k];
+      while (n >= lower && cross(h[n - 2], h[n - 1], i) <= 0) n--;
+      h[n++] = i;
+    }
+    n--; // the last point repeats the first
+    for (let e = 0; e < 5; e++) {
+      if (n < 3 || e >= n) {
+        H[e].set(0, 0, 1); // always inside
+        continue;
+      }
+      const a = h[e], b = h[(e + 1) % n];
+      // Counter-clockwise hull (x right, z down the page): the inside is to the left of a -> b.
+      const ex = fp[b * 2] - fp[a * 2], ez = fp[b * 2 + 1] - fp[a * 2 + 1];
+      const len = Math.hypot(ex, ez) || 1;
+      const nx = -ez / len, nz = ex / len;
+      H[e].set(nx, nz, -(nx * fp[a * 2] + nz * fp[a * 2 + 1]));
+    }
+  }
 
   update(camera: THREE.PerspectiveCamera, player: THREE.Vector3 | null): void {
     if (!this.root.visible) return;
     const cam = camera.position;
-    if (this.updateField(cam)) {
+    // The view's main horizontal axis and direction (cells are walked outwards along it).
+    const e = camera.matrixWorld.elements;
+    const fx = -e[8], fz = -e[10];
+    const majorX = Math.abs(fx) > Math.abs(fz);
+    const down = majorX ? fx < 0 : fz < 0;
+    const g = this.store.heightAt(cam.x, cam.z);
+    const above = Number.isFinite(g) ? Math.max(0, cam.y - g) : 50;
+    let outer = 0;
+    for (const r of this.rings) outer = Math.max(outer, r.outer);
+    // Well above the grass's reach (flying), its field is left alone: resampling the ground under a
+    // fast camera cost 10-20 ms a frame for grass that cannot be seen. It catches up on the way down,
+    // before the camera is low enough to see the grass again.
+    if (above < outer + 20 && this.updateField(cam)) {
       this.texH.needsUpdate = true;
       this.texI.needsUpdate = true;
     }
     // The part of the ground the camera can see near it: the view pyramid cut off where the grass
     // ends (apex and the four corners at that depth), as a box on the ground.
-    const g = this.store.heightAt(cam.x, cam.z);
-    const above = Number.isFinite(g) ? Math.max(0, cam.y - g) : 50;
     let minX = cam.x, maxX = cam.x, minZ = cam.z, maxZ = cam.z;
-    const outer = Math.max(...this.rings.map((r) => r.outer));
     const depth = Math.hypot(outer, above + 2) + 1;
     this.invProj.copy(camera.projectionMatrixInverse);
-    for (const [nx, ny] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+    this.fp[0] = cam.x;
+    this.fp[1] = cam.z;
+    for (let c = 0; c < 4; c++) {
       // A point on the ray through this corner, scaled to the cut-off depth along the view axis.
-      const p = this.corner.set(nx, ny, 0.5).applyMatrix4(this.invProj);
+      const p = this.corner.set(c & 1 ? 1 : -1, c & 2 ? 1 : -1, 0.5).applyMatrix4(this.invProj);
       p.multiplyScalar(depth / Math.max(-p.z, 1e-4)).applyMatrix4(camera.matrixWorld);
       minX = Math.min(minX, p.x);
       maxX = Math.max(maxX, p.x);
       minZ = Math.min(minZ, p.z);
       maxZ = Math.max(maxZ, p.z);
+      this.fp[2 + c * 2] = p.x;
+      this.fp[3 + c * 2] = p.z;
     }
+    this.setHull();
     for (const r of this.rings) {
       // Above the ring's reach nothing of it can show.
       if (above > r.outer) {
@@ -374,9 +470,11 @@ export class Grass {
       const j0 = THREE.MathUtils.clamp(Math.floor(minZ / r.cell) - cz - 1, -half, r.gridN - 1 - half);
       const j1 = THREE.MathUtils.clamp(Math.floor(maxZ / r.cell) - cz + 1, -half, r.gridN - 1 - half);
       const w = i1 - i0 + 1;
+      const rows = j1 - j0 + 1;
       (r.uniforms.uGridOrg.value as THREE.Vector2).set(i0, j0);
       r.uniforms.uGridW.value = w;
-      r.geo.instanceCount = w * (j1 - j0 + 1) * r.perCellNow;
+      (r.uniforms.uGridWalk.value as THREE.Vector3).set(rows, majorX ? 1 : 0, down ? 1 : 0);
+      r.geo.instanceCount = w * rows * r.perCellNow;
     }
     if (player) grassUniforms.uPlayer.value.copy(player);
   }

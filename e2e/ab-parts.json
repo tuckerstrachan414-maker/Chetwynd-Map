@@ -1,0 +1,17 @@
+[
+ { "name": "terrain hidden", "on": "window.__cw.app.world.terrain.mesh.visible = false;", "off": "window.__cw.app.world.terrain.mesh.visible = true;" },
+ { "name": "terrain flat FS", "on": "const m = window.__cw.app.world.terrain.mesh.material; m.defines = { ...(m.defines || {}), DEBUG_FLAT_FS: '' }; m.needsUpdate = true;", "off": "const m = window.__cw.app.world.terrain.mesh.material; delete m.defines.DEBUG_FLAT_FS; m.needsUpdate = true;" },
+ { "name": "terrain no shadow recv", "on": "window.__cw.app.world.terrain.mesh.receiveShadow = false;", "off": "window.__cw.app.world.terrain.mesh.receiveShadow = true;" },
+ { "name": "terrain detail 150 m", "on": "window.__cw.app.world.terrain.mesh.material.__u = 1; window.__cw.app.world.terrainUniforms.uDetailDist.value = 150;", "off": "window.__cw.app.world.terrainUniforms.uDetailDist.value = 700;" },
+ { "name": "forest hidden", "on": "window.__cw.app.world.forest.root.visible = false;", "off": "window.__cw.app.world.forest.root.visible = true;" },
+ { "name": "forest leaves hidden", "on": "for (const n of window.__cw.app.world.forest.near) n.leaves.visible = false;", "off": "for (const n of window.__cw.app.world.forest.near) n.leaves.visible = true;" },
+ { "name": "forest bark hidden", "on": "for (const n of window.__cw.app.world.forest.near) n.bark.visible = false;", "off": "for (const n of window.__cw.app.world.forest.near) n.bark.visible = true;" },
+ { "name": "impostors hidden", "on": "for (const o of window.__cw.app.world.forest.root.children) if (o.name.startsWith('imp_')) o.visible = false;", "off": "for (const o of window.__cw.app.world.forest.root.children) if (o.name.startsWith('imp_')) o.visible = true;" },
+ { "name": "leaves no A2C", "on": "for (const n of window.__cw.app.world.forest.near) { n.leaves.material.alphaToCoverage = false; n.leaves.material.needsUpdate = true; }", "off": "for (const n of window.__cw.app.world.forest.near) { n.leaves.material.alphaToCoverage = true; n.leaves.material.needsUpdate = true; }" },
+ { "name": "grass hidden", "on": "window.__cw.app.world.grass.root.visible = false;", "off": "window.__cw.app.world.grass.root.visible = true;" },
+ { "name": "sky hidden", "on": "window.__cw.app.post.skyMesh.visible = false;", "off": "window.__cw.app.post.skyMesh.visible = true;" },
+ { "name": "shadow pass off", "on": "window.__cw.app.renderer.shadowMap.autoUpdate = false;", "off": "window.__cw.app.renderer.shadowMap.autoUpdate = true;" },
+ { "name": "MSAA 4 -> 0", "on": "const t = window.__cw.app.post.sceneRT; t.samples = 0; t.dispose();", "off": "const t = window.__cw.app.post.sceneRT; t.samples = 4; t.dispose();" },
+ { "name": "AO off", "on": "window.__cw.app.post.settings.ao = false;", "off": "window.__cw.app.post.settings.ao = true;" },
+ { "name": "render scale 0.77", "on": "const a = window.__cw.app; a.renderer.setPixelRatio(1.5 * 0.77); a.resize();", "off": "const a = window.__cw.app; a.renderer.setPixelRatio(1.5); a.resize();" }
+]
