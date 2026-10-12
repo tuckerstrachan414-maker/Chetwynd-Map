@@ -177,6 +177,7 @@ export class App {
     await this.physics.init();
     this.player = new Player(this.physics);
     this.player.water = (x, z) => this.world.water.sample(x, z);
+    this.player.ground = (x, z) => this.world.groundHeight(x, z);
     this.input = new Input(this.canvas);
     this.fly = new FlyController(this.camera, this.canvas);
     this.fly.enabled = false;

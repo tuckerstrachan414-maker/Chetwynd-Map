@@ -199,7 +199,9 @@ export function createTerrainMaterials(
     uSnow: { value: 0 },
     uNoiseTex: { value: noiseTexture() },
   });
-  const material = new THREE.MeshStandardMaterial({ roughness: 0.92, metalness: 0 });
+  // Double-sided: a camera that drops below the surface (a sunk vehicle, a walker in a streamed-in tile)
+  // sees the ground's underside, not through it to the sky. Back faces are lit as the underside.
+  const material = new THREE.MeshStandardMaterial({ roughness: 0.92, metalness: 0, side: THREE.DoubleSide });
   const q = new URLSearchParams(location.search);
   if (q.has('skirts')) material.defines = { DEBUG_SKIRTS: '' };
   if (q.has('gdebug')) material.defines = { DEBUG_GROUND: '' };
@@ -212,7 +214,7 @@ export function createTerrainMaterials(
         vec3 tWorldN = vec3(0.0, 1.0, 0.0);
         GSurf gs; gs.albedo = vec3(0.2); gs.nts = vec3(0.0, 0.0, 1.0); gs.rough = 0.9; gs.ao = 1.0;
         #else
-        vec3 tWorldN = terrainWorldNormal();
+        vec3 tWorldN = terrainWorldNormal() * (gl_FrontFacing ? 1.0 : -1.0);
         GSurf gs = groundSurface(vTerrainPos, tWorldN, length(vTerrainPos - uCamPos));
         #endif
         diffuseColor.rgb = gs.albedo;

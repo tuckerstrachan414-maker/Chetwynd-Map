@@ -19,6 +19,30 @@ export interface Resident {
 }
 
 /**
+ * Bilinear height of a resident node at (x, z), read from its own samples (the same grid the shader
+ * samples). `x, z` should lie inside the node; positions outside are clamped to its edge.
+ */
+export function sampleNode(index: TerrainIndex, r: Resident, x: number, z: number): number {
+  const { level, i, j } = r.info;
+  const s = index.size(level);
+  const x0 = index.originX(level, i), z0 = index.originX(level, j);
+  const res = index.nodeRes;
+  const tx = Math.min(Math.max(((x - x0) / s) * res, 0), res - 1e-6);
+  const tz = Math.min(Math.max(((z - z0) / s) * res, 0), res - 1e-6);
+  const ix = Math.floor(tx);
+  const iz = Math.floor(tz);
+  const fx = tx - ix;
+  const fz = tz - iz;
+  const n = index.nodeRes + 1;
+  const h = r.heights;
+  const a = h[iz * n + ix];
+  const b = h[iz * n + ix + 1];
+  const c = h[(iz + 1) * n + ix];
+  const d = h[(iz + 1) * n + ix + 1];
+  return (a * (1 - fx) + b * fx) * (1 - fz) + (c * (1 - fx) + d * fx) * fz;
+}
+
+/**
  * Streams terrain height nodes into a GPU texture array (one layer per node) and keeps
  * CPU copies for height queries. Slots are recycled least-recently-used.
  */
@@ -191,23 +215,7 @@ export class TerrainStore {
       }
     }
     if (!found) return NaN;
-    const { level, i, j } = found.info;
-    const s = idx.size(level);
-    const x0 = idx.originX(level, i), z0 = idx.originX(level, j);
-    const res = idx.nodeRes;
-    const tx = Math.min(Math.max(((x - x0) / s) * res, 0), res - 1e-6);
-    const tz = Math.min(Math.max(((z - z0) / s) * res, 0), res - 1e-6);
-    const ix = Math.floor(tx);
-    const iz = Math.floor(tz);
-    const fx = tx - ix;
-    const fz = tz - iz;
-    const n = this.n;
-    const h = found.heights;
-    const a = h[iz * n + ix];
-    const b = h[iz * n + ix + 1];
-    const c = h[(iz + 1) * n + ix];
-    const d = h[(iz + 1) * n + ix + 1];
-    return (a * (1 - fx) + b * fx) * (1 - fz) + (c * (1 - fx) + d * fx) * fz;
+    return sampleNode(idx, found, x, z);
   }
 
   /** Ground material ID (see pipeline/ground.py) at (x, z) from resident level-0 nodes; -1 if unknown. */
