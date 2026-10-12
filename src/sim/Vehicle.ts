@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { buildPickup, PICKUP, type PickupParts } from '../world/vehicle/PickupModel';
 import { PoseHistory } from './FixedStep';
 import type { Input } from './Input';
-import type { Physics } from './Physics';
+import { SINK_DEPTH, type Physics } from './Physics';
 
 /** Driving surface grip (tyre friction slip) by season/weather. */
 export interface GripState {
@@ -122,6 +122,32 @@ export class Vehicle {
     this.camInit = false;
     this.gear = 1;
     this.speed = 0;
+    this.sync();
+    this.history.reset(this.position, this.quaternion);
+  }
+
+  /**
+   * Lift a chassis that has sunk below the ground back onto it, upright and facing the same way, with no
+   * speed: the ground under it was missing or streamed in late, or it was driven into the ground.
+   */
+  recover(groundAt: (x: number, z: number) => number): void {
+    if (!this.live) return;
+    this.sync();
+    const g = groundAt(this.position.x, this.position.z);
+    // NaN (no terrain data here) fails the comparison, so nothing is moved.
+    if (!(this.position.y < g - SINK_DEPTH)) return;
+    const f = _fwd.set(1, 0, 0).applyQuaternion(this.quaternion);
+    const yaw = Math.atan2(-f.z, f.x);
+    _quat.setFromAxisAngle(_yAxis, yaw);
+    _v.x = this.position.x; _v.y = g + PICKUP.rideY + 0.25; _v.z = this.position.z;
+    _r.x = _quat.x; _r.y = _quat.y; _r.z = _quat.z; _r.w = _quat.w;
+    this.body.setTranslation(_v, true);
+    this.body.setRotation(_r, true);
+    _v.x = 0; _v.y = 0; _v.z = 0;
+    this.body.setLinvel(_v, true);
+    this.body.setAngvel(_v, true);
+    this.body.resetForces(true);
+    this.body.resetTorques(true);
     this.sync();
     this.history.reset(this.position, this.quaternion);
   }

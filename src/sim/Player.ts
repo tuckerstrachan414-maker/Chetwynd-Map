@@ -2,7 +2,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
 import { PoseHistory } from './FixedStep';
 import type { Input } from './Input';
-import type { Physics } from './Physics';
+import { SINK_DEPTH, type Physics } from './Physics';
 
 const RADIUS = 0.3;
 const HALF = 0.6;
@@ -51,6 +51,8 @@ export class Player {
   sensitivity = 0.0022;
   /** Water surface under the player (null on land); set by the app. */
   water?: (x: number, z: number) => WaterQuery | null;
+  /** Ground height at (x, z), NaN where there is no terrain data; set by the app. */
+  ground?: (x: number, z: number) => number;
   /** Depth of water at the player's feet (0 on land). */
   waterDepth = 0;
   swimming = false;
@@ -121,9 +123,27 @@ export class Player {
     if (input.hit('Space') || (gp?.buttons[0]?.pressed ?? false)) this.jumpQueued = true;
   }
 
+  /**
+   * Feet well below the ground (the ground streamed in under the walker): stand back on it, with no fall
+   * speed, so the camera never sits inside the terrain.
+   */
+  private liftOntoGround(): void {
+    const t = this.body!.translation();
+    const g = this.ground?.(t.x, t.z) ?? NaN;
+    // NaN (no terrain data here) fails the comparison, so nothing is moved.
+    if (!(t.y - HALF - RADIUS < g - SINK_DEPTH)) return;
+    _move.x = t.x; _move.y = g + HALF + RADIUS + 0.05; _move.z = t.z;
+    this.body!.setTranslation(_move, true);
+    this.body!.setNextKinematicTranslation(_move);
+    this.vy = 0;
+    this.sync();
+    this.history.reset(this.position);
+  }
+
   /** One fixed physics step of the walker: water, buoyancy, gravity and the character controller. */
   step(h: number): void {
     if (!this.body || !this.active) return;
+    this.liftOntoGround();
     const t0 = this.body.translation();
     const feet = t0.y - HALF - RADIUS;
     const wq = this.water?.(t0.x, t0.z) ?? null;

@@ -1,6 +1,6 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { BuildingRec } from '../world/buildings/BuildingGen';
-import type { TerrainStore } from '../world/terrain/TerrainStore';
+import { sampleNode, type Resident, type TerrainStore } from '../world/terrain/TerrainStore';
 
 /** Scratch values handed to Rapier setters (no object per call). */
 const _v = { x: 0, y: 0, z: 0 };
@@ -10,8 +10,20 @@ const _q = { x: 0, y: 0, z: 0, w: 1 };
 const nodeKey = (i: number, j: number) => i * 4096 + j;
 
 /**
- * Rapier world with streamed colliders: 1 m terrain heightfields for level-0 nodes near the
- * player, wall boxes for nearby buildings, and trunk cylinders for nearby trees.
+ * How far (m) a body's origin may sit below the ground before it counts as sunk into it. A sunk body is
+ * lifted back onto the surface (see Vehicle.recover, Drone.recover, Player.step).
+ */
+export const SINK_DEPTH = 0.5;
+
+/** A terrain tile's heightfield, and the terrain level it was sampled from. */
+interface TileField {
+  collider: RAPIER.Collider;
+  level: number;
+}
+
+/**
+ * Rapier world with streamed colliders: 1 m terrain heightfields under the player, wall boxes for
+ * nearby buildings, and trunk cylinders for nearby trees.
  *
  * The world advances only in fixed steps (`step(h)`, driven by a FixedStep clock), never by frame
  * time. Streamed colliders come from pools: trunk cylinders and wall boxes are moved, resized and
@@ -21,8 +33,10 @@ const nodeKey = (i: number, j: number) => i * 4096 + j;
 export class Physics {
   world!: RAPIER.World;
   R = RAPIER;
-  private readonly terrain = new Map<number, RAPIER.Collider>();
+  private readonly terrain = new Map<number, TileField>();
   private readonly terrainWant = new Set<number>();
+  /** Row-major samples of one tile (heights[iz * n + ix]), and the same in Rapier's column-major layout. */
+  private terrainRows = new Float32Array(0);
   private terrainScratch = new Float32Array(0);
   private readonly buildings = new Map<string, RAPIER.Collider[]>();
   private readonly meshes = new Map<string, RAPIER.Collider[]>();
@@ -40,7 +54,15 @@ export class Physics {
     this.world.timestep = 1 / 60;
   }
 
-  /** Keep heightfields for level-0 terrain nodes within `radius` of (x, z). */
+  /**
+   * Keep a 1 m heightfield under every level-0 tile within `radius` of (x, z) that has any terrain data.
+   *
+   * Each tile is sampled from the finest terrain node resident over it: its own 1 m node where that has
+   * streamed in, otherwise the coarser node covering it (2 m, 4 m, ... up to the root, which is always
+   * resident). So the ground is there everywhere, including beyond the 1 m survey, and while a tile's
+   * fine data is still loading. A tile is rebuilt when a finer node arrives, and dropped when it leaves
+   * the radius.
+   */
   updateTerrain(store: TerrainStore, x: number, z: number, radius = 200): void {
     const idx = store.index;
     const s = idx.size(0);
@@ -51,31 +73,64 @@ export class Physics {
     for (let j = j0; j <= j1; j++) {
       for (let i = i0; i <= i1; i++) {
         const key = nodeKey(i, j);
-        const r = store.get(0, i, j);
+        const r = this.finestAt(store, i, j);
         if (!r) continue;
         want.add(key);
-        if (this.terrain.has(key)) continue;
-        const n = store.n;
-        const cells = n - 1;
-        // Rapier copies the heights in, so one scratch buffer serves every node.
-        if (this.terrainScratch.length !== n * n) this.terrainScratch = new Float32Array(n * n);
-        const hf = this.terrainScratch;
-        let minH = Infinity;
-        for (let k = 0; k < n * n; k++) minH = Math.min(minH, r.heights[k]);
-        for (let iz = 0; iz < n; iz++) for (let ix = 0; ix < n; ix++) hf[ix * n + iz] = r.heights[iz * n + ix] - minH;
-        const [ox, oz] = idx.origin(0, i, j);
-        const desc = RAPIER.ColliderDesc.heightfield(cells, cells, hf, { x: s, y: 1, z: s })
-          .setTranslation(ox + s / 2, minH, oz + s / 2)
-          .setFriction(0.9);
-        this.terrain.set(key, this.world.createCollider(desc));
+        const cur = this.terrain.get(key);
+        if (cur && cur.level === r.info.level) continue;
+        if (cur) this.world.removeCollider(cur.collider, false);
+        this.terrain.set(key, { collider: this.tileHeightfield(store, i, j, r), level: r.info.level });
       }
     }
-    for (const [key, c] of this.terrain) {
+    for (const [key, t] of this.terrain) {
       if (!want.has(key)) {
-        this.world.removeCollider(c, false);
+        this.world.removeCollider(t.collider, false);
         this.terrain.delete(key);
       }
     }
+  }
+
+  /** The finest terrain node resident over level-0 tile (i, j), or undefined if none is. */
+  private finestAt(store: TerrainStore, i: number, j: number): Resident | undefined {
+    const idx = store.index;
+    const s0 = idx.size(0);
+    // Nodes nest on the same grid, so the tile's centre finds the node that covers the whole tile.
+    const cx = idx.originX(0, i) + s0 / 2, cz = idx.originX(0, j) + s0 / 2;
+    for (let level = 0; level <= idx.rootLevel; level++) {
+      const s = idx.size(level);
+      const r = store.get(level, Math.floor((cx + idx.half) / s), Math.floor((cz + idx.half) / s));
+      if (r) return r;
+    }
+    return undefined;
+  }
+
+  /** A tile's heightfield sampled at 1 m from `r` (its own samples at level 0, resampled from a coarser node). */
+  private tileHeightfield(store: TerrainStore, i: number, j: number, r: Resident): RAPIER.Collider {
+    const idx = store.index;
+    const n = store.n;
+    const cells = n - 1;
+    const s = idx.size(0);
+    const [ox, oz] = idx.origin(0, i, j);
+    if (this.terrainScratch.length !== n * n) {
+      this.terrainRows = new Float32Array(n * n);
+      this.terrainScratch = new Float32Array(n * n);
+    }
+    const rows = this.terrainRows;
+    let minH = Infinity;
+    for (let iz = 0; iz < n; iz++) {
+      for (let ix = 0; ix < n; ix++) {
+        const h = sampleNode(idx, r, ox + (ix * s) / cells, oz + (iz * s) / cells);
+        rows[iz * n + ix] = h;
+        minH = Math.min(minH, h);
+      }
+    }
+    // Rapier copies the heights in, so one scratch buffer serves every tile.
+    const hf = this.terrainScratch;
+    for (let iz = 0; iz < n; iz++) for (let ix = 0; ix < n; ix++) hf[ix * n + iz] = rows[iz * n + ix] - minH;
+    const desc = RAPIER.ColliderDesc.heightfield(cells, cells, hf, { x: s, y: 1, z: s })
+      .setTranslation(ox + s / 2, minH, oz + s / 2)
+      .setFriction(0.9);
+    return this.world.createCollider(desc);
   }
 
   /** A wall box from the pool (enabled), sized and placed. `ang`: heading atan2(dz, dx). */

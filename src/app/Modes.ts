@@ -323,6 +323,7 @@ export class Modes {
       h.physics.updateTerrain(h.world.store, v.position.x, v.position.z, 250);
       h.physics.updateTrunks(h.world.forest.treesNear(v.position.x, v.position.z, 45), v.position.x, v.position.z);
       this.driveClock.advance(dt, this.stepVehicle);
+      v.recover(this.groundAt);
       v.render(h.camera, dt, this.groundAt, h.world.sky.night, this.driveClock.alpha);
       h.world.setHeadlights(v.model.root, h.world.sky.night);
       if (input.hit('KeyR')) this.enter('drive', 'drive');
@@ -351,6 +352,7 @@ export class Modes {
       h.physics.updateTrunks(h.world.forest.treesNear(d.position.x, d.position.z, 45), d.position.x, d.position.z);
       this.droneSticks = s;
       this.droneClock.advance(dt, this.stepDrone);
+      d.recover(this.groundAt);
       d.applyCamera(h.camera, dt, time, this.droneClock.alpha);
       const e = _euler.setFromQuaternion(d.quaternion, 'YXZ');
       const tel = d.telemetry(h.world.groundHeight(d.position.x, d.position.z));

@@ -2,7 +2,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
 import { PoseHistory } from './FixedStep';
 import { FlightController, type Sticks } from './FlightModel';
-import type { Physics } from './Physics';
+import { SINK_DEPTH, type Physics } from './Physics';
 import type { WaterQuery } from './Player';
 
 const HALF = new THREE.Vector3(0.12, 0.035, 0.12);
@@ -98,6 +98,27 @@ export class Drone {
 
   respawn(): void {
     this.spawn(this.spawnPoint.x, this.spawnPoint.y, this.spawnPoint.z, this.spawnYaw);
+  }
+
+  /**
+   * A frame that has sunk below the ground has flown into it (or the ground streamed in under it): that is
+   * a crash, and the frame is set back on the surface where it went in, at rest.
+   */
+  recover(groundAt: (x: number, z: number) => number): void {
+    this.sync();
+    const g = groundAt(this.position.x, this.position.z);
+    // NaN (no terrain data here) fails the comparison, so nothing is moved.
+    if (!(this.position.y < g - SINK_DEPTH)) return;
+    this.crash('CRASH');
+    _v.x = this.position.x; _v.y = g + HALF.y + 0.02; _v.z = this.position.z;
+    this.body.setTranslation(_v, true);
+    _v.x = 0; _v.y = 0; _v.z = 0;
+    this.body.setLinvel(_v, true);
+    this.body.setAngvel(_v, true);
+    this.body.resetForces(true);
+    this.body.resetTorques(true);
+    this.sync();
+    this.history.reset(this.position, this.quaternion);
   }
 
   /** Park the frame (disabled, kept for the next flight). */
